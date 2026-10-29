@@ -1,0 +1,19 @@
+node_modules
+dist
+dev-dist
+.env
+.env.*
+!.env.example
+*.local
+# Never commit real data or exports
+*.xlsx
+*.xls
+*.csv
+supabase/.temp
+supabase/.branches
+.DS_Store
+Thumbs.db
+
+# Internal planning notes and editor settings stay on this computer
+PLAN.md
+.claude/

@@ -1,0 +1,63 @@
+name: Build and deploy to GitHub Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  safety:
+    name: Block real data and secrets
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fail if spreadsheets, CSVs or env files are committed
+        run: |
+          BAD=$(git ls-files | grep -E -i '\.(xlsx|xls|csv)$|(^|/)\.env($|\.)' | grep -v -E '(^|/)\.env\.example$' || true)
+          if [ -n "$BAD" ]; then
+            echo "::error::These files must never be committed:"
+            echo "$BAD"
+            exit 1
+          fi
+          echo "No data exports or env files in the repo."
+
+  build:
+    needs: safety
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm test
+      - name: Build
+        env:
+          # Set under repo Settings > Secrets and variables > Actions > Variables.
+          # Without them the site shows "System is being set up".
+          VITE_SUPABASE_URL: ${{ vars.VITE_SUPABASE_URL }}
+          VITE_SUPABASE_ANON_KEY: ${{ vars.VITE_SUPABASE_ANON_KEY }}
+        run: npm run build
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

@@ -1,0 +1,65 @@
+@import "tailwindcss";
+
+/* Design tokens (PLAN.md section 8): calm blue primary, soft lavender accent,
+   white rounded cards on a soft gradient, green only for success. */
+@theme {
+  --font-sans: "Plus Jakarta Sans", ui-sans-serif, system-ui, sans-serif;
+
+  --color-primary: #2f6fed;
+  --color-primary-dark: #1f56c7;
+  --color-primary-soft: #e8efff;
+  --color-accent: #7c5cf0;
+  --color-accent-soft: #f1edff;
+  --color-ink: #1b2233;
+  --color-muted: #6b7489;
+  --color-line: #e3e7f0;
+  --color-surface: #ffffff;
+  --color-page: #f4f6fb;
+  --color-success: #1f9d74;
+  --color-danger: #d64560;
+
+  --radius-card: 20px;
+  --radius-field: 14px;
+}
+
+@layer base {
+  html {
+    -webkit-tap-highlight-color: transparent;
+  }
+  body {
+    @apply font-sans text-ink antialiased;
+    min-height: 100dvh;
+    background: linear-gradient(160deg, #eef3ff 0%, #f6f2ff 55%, #f4f6fb 100%) fixed;
+  }
+}
+
+/* Tailwind v4: shared component classes must be @utility so they can be @apply-ed. */
+@utility card {
+  @apply bg-surface rounded-[var(--radius-card)] p-5 shadow-[0_8px_24px_rgba(31,52,110,0.06)];
+}
+
+@utility field {
+  @apply block w-full rounded-[var(--radius-field)] border border-line bg-surface px-4 py-3 text-base
+    outline-none transition focus:border-primary focus:ring-4 focus:ring-primary/15;
+}
+
+@utility label {
+  @apply mb-1.5 block text-sm font-medium text-muted;
+}
+
+@utility btn {
+  @apply inline-flex min-h-12 w-full items-center justify-center rounded-full px-6 text-base font-semibold
+    transition disabled:cursor-not-allowed disabled:opacity-50;
+}
+
+@utility btn-primary {
+  @apply btn bg-primary text-white hover:bg-primary-dark;
+}
+
+@utility btn-ghost {
+  @apply btn border border-line bg-surface text-ink hover:bg-page;
+}
+
+@utility error {
+  @apply rounded-[var(--radius-field)] bg-danger/10 px-4 py-3 text-sm text-danger;
+}
