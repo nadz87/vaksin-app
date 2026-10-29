@@ -1,11 +1,10 @@
-// Staff accounts, run on the server only (replaces "Add user" in the Supabase dashboard):
+// Staff accounts from the server (the admin page does the same for health officers):
 //   node src/cli.ts create-staff --email a@b.my --role officer|platform_admin [--name "Nama"]
 //   node src/cli.ts reset-mfa   --email a@b.my     (lost phone: set up the app again)
 //   node src/cli.ts disable     --email a@b.my     (signs out everywhere, blocks sign-in)
 //   node src/cli.ts enable      --email a@b.my
-// create-staff prints a temporary password once; the officer must change it on first sign-in.
+// Staff have no passwords: they sign in with an emailed code, then the authenticator app.
 import pg from 'pg'
-import { hashPassword, newTemporaryPassword } from './secrets.ts'
 import { revokeSessions } from './sessions.ts'
 
 function arg(name: string): string | undefined {
@@ -26,18 +25,17 @@ try {
   if (command === 'create-staff') {
     const role = arg('role')
     if (role !== 'officer' && role !== 'platform_admin') throw new Error('--role must be officer or platform_admin')
-    const password = newTemporaryPassword()
     const { rows } = await db.query(
-      `insert into auth.users (email, password_hash, must_change_password) values ($1, $2, true)
-       on conflict (lower(email)) do update set password_hash = excluded.password_hash, must_change_password = true
+      `insert into auth.users (email) values ($1)
+       on conflict (lower(email)) do update set password_hash = null, must_change_password = false
        returning id`,
-      [email, await hashPassword(password)],
+      [email],
     )
     await db.query('select auth_private.set_staff_role($1, $2, $3)', [rows[0].id, role, arg('name') ?? null])
     await revokeSessions(db, rows[0].id)
+    const page = role === 'officer' ? '#/officer' : '#/admin'
     console.log(`${email} is now ${role}.`)
-    console.log(`Temporary password (shown once, give it to them privately): ${password}`)
-    console.log('They sign in, change the password, then set up the authenticator app.')
+    console.log(`They open ${page}, sign in with a code sent to this email, then set up the authenticator app.`)
   } else {
     const { rows } = await db.query('select id from auth.users where lower(email) = $1', [email])
     if (!rows[0]) throw new Error(`No account for ${email}`)

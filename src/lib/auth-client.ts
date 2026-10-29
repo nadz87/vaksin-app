@@ -99,14 +99,9 @@ export async function verifyEmail(email: string, code: string): Promise<Result> 
   return signedIn(await post<TokenReply>('/email/verify', { email, code }))
 }
 
-export async function passwordSignIn(email: string, password: string): Promise<Result> {
-  return signedIn(await post<TokenReply>('/password', { email, password }))
-}
-
-export async function changePassword(oldPassword: string, newPassword: string): Promise<Result> {
-  const result = await post<{ ok: true }>('/password/change', { old_password: oldPassword, new_password: newPassword }, await accessToken())
-  if (result.error === null && current) save({ ...current, must_change_password: false })
-  return result.error === null ? { data: true, error: null } : result
+/** Platform admin only: create a health officer account and email them the invitation. */
+export async function inviteOfficer(email: string) {
+  return post<{ ok: true; already_registered: boolean }>('/invite', { email }, await accessToken())
 }
 
 export async function enrollMfa() {

@@ -84,17 +84,20 @@ gh workflow run "Build and deploy to GitHub Pages"
 
 ## First accounts
 
-On the server, the sign-in service's CLI creates staff accounts and prints a temporary
-password once. Give it to the person privately.
+Staff have no passwords: they sign in with a code sent to their email, then an
+authenticator app (Google Authenticator or Microsoft Authenticator).
 
-```bash
-node src/cli.ts create-staff --email admin@imotion.my --role platform_admin --name "Nama"
-node src/cli.ts create-staff --email pegawai@example.my --role officer --name "Nama"
-```
+1. The platform admin, once, on the server:
 
-They sign in at `#/admin` or `#/officer`, change the password, and set up an
-authenticator app. The admin then assigns each officer to schools at `#/admin`.
-Lost phone: `reset-mfa --email ...`. Someone leaves: `disable --email ...`.
+   ```bash
+   node server/prod.mjs staff create-staff --email admin@imotion.my --role platform_admin --name "Nama"
+   ```
+
+2. The admin signs in at `#/admin` and invites each health officer by email. The officer
+   gets an email with the `#/officer` link, signs in, sets up the authenticator app,
+   completes their profile (name, job title / clinic, phone) and chooses their own schools.
+3. The admin page lists every officer with their profile and schools. Lost phone:
+   **Set semula 2 langkah**. Someone leaves: **Nyahaktifkan** (signs them out everywhere).
 
 Parents just open their school's link, `#/s/<school-slug>`, for example
 `https://nadz87.github.io/vaksin-app/#/s/sk-putrajaya-presint-8-1`, and sign in with an

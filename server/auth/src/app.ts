@@ -6,16 +6,8 @@ import type pg from 'pg'
 import type { Config } from './config.ts'
 import type { Mailer } from './mail.ts'
 import { forget, recent, record, tidy } from './rate.ts'
-import {
-  decryptSecret,
-  encryptSecret,
-  hashEmailCode,
-  hashPassword,
-  newEmailCode,
-  sameText,
-  verifyPassword,
-} from './secrets.ts'
-import { STAFF_ROLES, currentSession, hashToken, issueTokens, revokeSessions, startSession, userRole, type Aal } from './sessions.ts'
+import { decryptSecret, encryptSecret, hashEmailCode, newEmailCode, sameText } from './secrets.ts'
+import { STAFF_ROLES, currentSession, hashToken, issueTokens, startSession, userRole, type Aal } from './sessions.ts'
 
 export const LIMITS = {
   codeMinutes: 10,
@@ -23,11 +15,10 @@ export const LIMITS = {
   startPerEmailMinute: 1,
   startPerEmailHour: 5,
   startPerIpHour: 20,
-  passwordTries: 5,
   mfaTries: 5,
+  invitesPerHour: 30,
   lockSeconds: 15 * 60,
   refreshRaceSeconds: 10,
-  minPasswordLength: 12,
 }
 
 type Deps = { config: Config; db: pg.Pool; mailer: Mailer }
@@ -134,8 +125,11 @@ export function createApp({ config, db, mailer }: Deps) {
       }
       await client.query('delete from auth_private.email_codes where lower(email) = $1', [email])
       const { rows: users } = await client.query(
+        // Staff sign in this way too (no passwords): proving the inbox replaces any old
+        // temporary password, which is cleared so it can never be used.
         `insert into auth.users (email, last_sign_in_at) values ($1, now())
-         on conflict (lower(email)) do update set last_sign_in_at = now()
+         on conflict (lower(email)) do update
+           set last_sign_in_at = now(), password_hash = null, must_change_password = false
          returning id, email, disabled_at, must_change_password`,
         [email],
       )
@@ -154,58 +148,12 @@ export function createApp({ config, db, mailer }: Deps) {
     }
   })
 
-  // 3. Staff sign-in with email + password. Locked for 15 minutes after 5 wrong tries.
-  app.post('/password', async (c) => {
-    const input = await body(c)
-    const email = emailOf(input)
-    const password = text(input, 'password')
-    if (!email || !password) return fail(c, 400, 'invalid_credentials')
-    if ((await recent(db, `pwfail:${email}`, LIMITS.lockSeconds)) >= LIMITS.passwordTries) return fail(c, 429, 'locked')
-
-    const { rows } = await db.query(
-      'select id, email, password_hash, disabled_at, must_change_password from auth.users where lower(email) = $1',
-      [email],
-    )
-    const user = rows[0]
-    const ok = await verifyPassword(password, user?.password_hash ?? null)
-    if (!ok || !user || user.disabled_at) {
-      await record(db, `pwfail:${email}`)
-      return fail(c, 400, 'invalid_credentials')
-    }
-    await forget(db, `pwfail:${email}`)
-    await db.query('update auth.users set last_sign_in_at = now() where id = $1', [user.id])
-    return c.json(await startSession(config, db, user, c.req.header('user-agent')))
-  })
-
-  // 4. Change password (required after a temporary one). Other devices are signed out.
-  app.post('/password/change', async (c) => {
-    const me = await currentSession(config, db, c.req.header('authorization'))
-    if (!me) return fail(c, 401, 'invalid_token')
-    const input = await body(c)
-    const oldPassword = text(input, 'old_password')
-    const newPassword = text(input, 'new_password')
-    if (!newPassword || newPassword.length < LIMITS.minPasswordLength) return fail(c, 400, 'weak_password')
-    const { rows } = await db.query('select password_hash from auth.users where id = $1', [me.userId])
-    if (!rows[0]?.password_hash || !oldPassword || !(await verifyPassword(oldPassword, rows[0].password_hash))) {
-      return fail(c, 400, 'invalid_credentials')
-    }
-    if (oldPassword === newPassword) return fail(c, 400, 'weak_password')
-    await db.query('update auth.users set password_hash = $2, must_change_password = false where id = $1', [
-      me.userId,
-      await hashPassword(newPassword),
-    ])
-    await revokeSessions(db, me.userId, me.sessionId)
-    return c.json({ ok: true })
-  })
-
-  // 5. Staff authenticator app: set up (only while not yet set up; an admin resets it).
-  //    A temporary password must be changed first, so whoever handed it out cannot finish
-  //    the 2-step set-up in the officer's place.
+  // 3. Staff authenticator app: set up (only while not yet set up; an admin resets it).
+  //    Staff have no passwords: the emailed code above plus this app are the two steps.
   app.post('/mfa/enroll', async (c) => {
     const me = await currentSession(config, db, c.req.header('authorization'))
     if (!me) return fail(c, 401, 'invalid_token')
     if (!STAFF_ROLES.has(me.role)) return fail(c, 403, 'not_staff')
-    if (await mustChange(db, me.userId)) return fail(c, 403, 'password_change_required')
     const { rows } = await db.query('select verified_at from auth_private.mfa_factors where user_id = $1', [me.userId])
     if (rows[0]?.verified_at) return fail(c, 409, 'mfa_already_enrolled')
 
@@ -219,12 +167,11 @@ export function createApp({ config, db, mailer }: Deps) {
     return c.json({ uri: totp.toString(), secret: secret.base32 })
   })
 
-  // 6. Check a 6-digit authenticator code: the session becomes aal2 (2-step passed).
+  // 4. Check a 6-digit authenticator code: the session becomes aal2 (2-step passed).
   app.post('/mfa/verify', async (c) => {
     const me = await currentSession(config, db, c.req.header('authorization'))
     if (!me) return fail(c, 401, 'invalid_token')
     if (!STAFF_ROLES.has(me.role)) return fail(c, 403, 'not_staff')
-    if (await mustChange(db, me.userId)) return fail(c, 403, 'password_change_required')
     const failKey = `mfafail:${me.userId}`
     if ((await recent(db, failKey, LIMITS.lockSeconds)) >= LIMITS.mfaTries) return fail(c, 429, 'locked')
     const code = text(await body(c), 'code', 6)
@@ -248,11 +195,11 @@ export function createApp({ config, db, mailer }: Deps) {
     // The session gets a fresh refresh token below; the earlier one stops working.
     await db.query('update auth_private.refresh_tokens set used_at = now() where session_id = $1 and used_at is null', [me.sessionId])
     return c.json(
-      await issueTokens(config, db, { id: me.userId, email: me.email }, me.sessionId, 'aal2', me.role, await mustChange(db, me.userId)),
+      await issueTokens(config, db, { id: me.userId, email: me.email }, me.sessionId, 'aal2', me.role, false),
     )
   })
 
-  // 7. Swap a refresh token for new tokens. Each refresh token works once; using an old one
+  // 5. Swap a refresh token for new tokens. Each refresh token works once; using an old one
   //    again means it was copied, so the whole session ends. Two tabs refreshing at the same
   //    moment are not theft: within 10 seconds the late one is told to re-read the new tokens.
   app.post('/refresh', async (c) => {
@@ -309,7 +256,38 @@ export function createApp({ config, db, mailer }: Deps) {
     }
   })
 
-  // 8. Sign out this device.
+  // 6. Platform admin invites a health officer: the account is made (role officer) and an
+  //    invitation email with the officer page link goes out. Inviting again resends it.
+  app.post('/invite', async (c) => {
+    const me = await currentSession(config, db, c.req.header('authorization'))
+    if (!me) return fail(c, 401, 'invalid_token')
+    if (me.role !== 'platform_admin' || me.aal !== 'aal2') return fail(c, 403, 'not_allowed')
+    const email = emailOf(await body(c))
+    if (!email) return fail(c, 400, 'invalid_email')
+    const key = `invite:${me.userId}`
+    if ((await recent(db, key, 3600)) >= LIMITS.invitesPerHour) return fail(c, 429, 'rate_limited')
+    await record(db, key)
+
+    let alreadyRegistered: boolean
+    try {
+      const { rows } = await db.query('select already_registered from auth_private.invite_officer($1, $2)', [me.userId, email])
+      alreadyRegistered = rows[0].already_registered
+    } catch (error) {
+      // The database refuses with a short code: already_admin, email_is_parent, ...
+      const code = (error as Error).message
+      if (/^[a-z_]+$/.test(code)) return fail(c, 400, code)
+      throw error
+    }
+    try {
+      await mailer.sendInvite(email, `${config.siteUrl}#/officer`)
+    } catch (error) {
+      console.error('invite send failed', (error as Error).message)
+      return fail(c, 502, 'email_failed')
+    }
+    return c.json({ ok: true, already_registered: alreadyRegistered })
+  })
+
+  // 7. Sign out this device.
   app.post('/logout', async (c) => {
     const me = await currentSession(config, db, c.req.header('authorization'))
     if (me) await db.query('update auth_private.sessions set revoked_at = now() where id = $1', [me.sessionId])
@@ -322,9 +300,4 @@ export function createApp({ config, db, mailer }: Deps) {
     return c.json({ error: 'server_error' }, 500)
   })
   return app
-}
-
-async function mustChange(db: pg.Pool, userId: string): Promise<boolean> {
-  const { rows } = await db.query('select must_change_password from auth.users where id = $1', [userId])
-  return rows[0]?.must_change_password ?? false
 }

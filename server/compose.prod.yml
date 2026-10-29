@@ -67,6 +67,8 @@ services:
       SMTP_USER: ${SMTP_USER:-}
       SMTP_PASS: ${SMTP_PASS:-}
       MAIL_FROM: ${MAIL_FROM:-Vaksin App <no-reply@imotion.my>}
+      # The website, for links in emails (officer invitations).
+      SITE_URL: ${SITE_URL:-https://nadz87.github.io/vaksin-app/}
 
   gateway:
     <<: *common

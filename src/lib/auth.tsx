@@ -14,6 +14,8 @@ export type Profile = {
   postcode: string | null
   city: string | null
   state: string | null
+  /** Health officers only, e.g. "Jururawat Kesihatan, KK Presint 9". */
+  job_title: string | null
 }
 export type Session = { user: { id: string; email: string } }
 
@@ -23,8 +25,6 @@ type Auth = {
   profile: Profile | null
   /** 'aal2' once an officer/admin has passed 2-step verification. */
   aal: 'aal1' | 'aal2' | null
-  /** Staff signed in with a temporary password and must choose a new one first. */
-  mustChangePassword: boolean
   refresh: () => Promise<void>
   signOut: () => Promise<void>
 }
@@ -47,7 +47,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
     const { data } = await db()
       .from('profiles')
-      .select('user_id, role, full_name, phone, email, address_line1, address_line2, postcode, city, state')
+      .select('user_id, role, full_name, phone, email, address_line1, address_line2, postcode, city, state, job_title')
       .eq('user_id', userId)
       .maybeSingle()
     setProfile((data as Profile | null) ?? null)
@@ -71,7 +71,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         session,
         profile,
         aal: stored?.aal ?? null,
-        mustChangePassword: stored?.must_change_password ?? false,
         refresh: load,
         signOut,
       }}

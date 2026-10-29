@@ -8,6 +8,8 @@ export type Config = {
   totpKey: Buffer
   smtp: { host: string; port: number; user?: string; pass?: string; requireTls: boolean }
   mailFrom: string
+  /** The website's address, ending in "/", for links in emails (e.g. the officer invitation). */
+  siteUrl: string
   port: number
   accessTtlSeconds: number
   parentSessionSeconds: number
@@ -28,6 +30,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   const totpHex = need('TOTP_ENC_KEY', 64)
   const smtpHost = need('SMTP_HOST')
   const mailFrom = need('MAIL_FROM')
+  const siteUrl = need('SITE_URL')
+  if (siteUrl && !/^https?:\/\/\S+\/$/.test(siteUrl)) problems.push('SITE_URL must be a full address ending in "/"')
   if (totpHex && !/^[0-9a-f]{64}/i.test(totpHex)) problems.push('TOTP_ENC_KEY must be 64 hex characters (32 bytes)')
   if (problems.length) throw new Error(`Sign-in service cannot start:\n- ${problems.join('\n- ')}`)
 
@@ -45,6 +49,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       requireTls: env.SMTP_REQUIRE_TLS !== '0',
     },
     mailFrom,
+    siteUrl,
     port: Number(env.PORT ?? 8080),
     accessTtlSeconds: 15 * 60,
     parentSessionSeconds: 30 * 24 * 3600,

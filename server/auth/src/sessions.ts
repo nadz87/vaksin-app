@@ -80,12 +80,13 @@ export async function issueTokens(
 export async function currentSession(config: Config, db: Queryable, authorization: string | undefined): Promise<SessionUser | null> {
   const token = authorization?.match(/^Bearer (\S+)$/)?.[1]
   if (!token) return null
-  let sub: string, sid: string
+  let sub: string, sid: string, tokenAal: unknown
   try {
     const { payload } = await jwtVerify(token, config.jwtSecret, { audience: 'authenticated', algorithms: ['HS256'] })
     if (typeof payload.sub !== 'string' || typeof payload.sid !== 'string') return null
     sub = payload.sub
     sid = payload.sid
+    tokenAal = payload.aal
   } catch {
     return null
   }
@@ -96,7 +97,10 @@ export async function currentSession(config: Config, db: Queryable, authorizatio
     [sid, sub],
   )
   if (!rows[0]) return null
-  return { userId: rows[0].user_id, email: rows[0].email, sessionId: rows[0].id, aal: rows[0].aal, role: await userRole(db, sub) }
+  // 2-step counts only when both agree: the token says so (as the database rules require)
+  // and the session passed it. A token issued before the 2-step check stays aal1.
+  const aal: Aal = tokenAal === 'aal2' && rows[0].aal === 'aal2' ? 'aal2' : 'aal1'
+  return { userId: rows[0].user_id, email: rows[0].email, sessionId: rows[0].id, aal, role: await userRole(db, sub) }
 }
 
 export async function revokeSessions(db: Queryable, userId: string, exceptSessionId?: string) {

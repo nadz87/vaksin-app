@@ -54,6 +54,7 @@ services:
       SMTP_PORT: "1025"
       SMTP_REQUIRE_TLS: "0"
       MAIL_FROM: Vaksin App <no-reply@imotion.my>
+      SITE_URL: http://localhost:5173/vaksin-app/
 
   mailpit:
     image: axllent/mailpit:v1.31.3

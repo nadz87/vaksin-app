@@ -27,16 +27,17 @@ the data is kept.
 - Test inbox (sign-in codes): http://127.0.0.1:8025 (no email leaves this PC)
 - Demo school link: `#/s/sk-putrajaya-presint-8-1`
 - Officer area: `#/officer` · Platform admin: `#/admin`
-- Staff accounts are made on the server with the sign-in service's CLI, which
-  prints a temporary password once:
+- Staff have no passwords: they sign in with an emailed code, then an authenticator app.
+  The platform admin is made once on the server with the sign-in service's CLI:
 
   ```bash
-  docker exec vaksin-dev-auth-1 node src/cli.ts create-staff --email pegawai.demo@test.local --role officer
+  docker exec vaksin-dev-auth-1 node src/cli.ts create-staff --email admin.demo@test.local --role platform_admin
   ```
 
-  The demo officer in the seed data already serves every school. On first
-  sign-in they change the password, then set up an authenticator app.
-  Other commands: `reset-mfa`, `disable`, `enable` (see `server/auth/src/cli.ts`).
+  The admin invites health officers by email at `#/admin`. Officers sign in at `#/officer`,
+  complete their profile and choose their own schools (Tetapan, Sekolah). The demo officer
+  in the seed data already serves every school.
+  Other CLI commands: `reset-mfa`, `disable`, `enable` (see `server/auth/src/cli.ts`).
 
 ## Tests
 

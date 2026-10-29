@@ -6,7 +6,7 @@ import { useI18n } from './lib/i18n'
 import { Centered, Loading, Shell } from './components/Layout'
 import { RequireParentProfile } from './components/CompleteProfile'
 import { AddChild, CancelAppointments, JoinSchool, ParentHome, ParentProfile, SchoolLanding, Welcome } from './pages/parent'
-import { AdminSchools, OfficerHome, StaffGate } from './pages/officer'
+import { AdminOfficers, OfficerHome, StaffGate } from './pages/officer'
 import { BookFlow } from './pages/book'
 import { StudentProfile } from './pages/officer-students'
 import { ChildEdit } from './pages/child'
@@ -31,7 +31,7 @@ const router = createHashRouter([
     children: [
       { path: '/officer', element: <StaffGate allow={['officer']}><OfficerHome /></StaffGate> },
       { path: '/officer/student/:id', element: <StaffGate allow={['officer']}><StudentProfile /></StaffGate> },
-      { path: '/admin', element: <StaffGate allow={['platform_admin']}><AdminSchools /></StaffGate> },
+      { path: '/admin', element: <StaffGate allow={['platform_admin']}><AdminOfficers /></StaffGate> },
     ],
   },
   { path: '*', element: <Navigate to="/" replace /> },

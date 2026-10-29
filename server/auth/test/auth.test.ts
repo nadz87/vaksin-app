@@ -9,7 +9,6 @@ import { dbUrl, devEnv } from '../../dev.mjs'
 import { migrate } from '../../migrate.mjs'
 import { LIMITS, createApp } from '../src/app.ts'
 import { loadConfig } from '../src/config.ts'
-import { hashPassword } from '../src/secrets.ts'
 
 const env = devEnv()
 const DB = 'vaksin_authtest'
@@ -21,11 +20,13 @@ const config = loadConfig({
   TOTP_ENC_KEY: env.TOTP_ENC_KEY,
   SMTP_HOST: 'unused',
   MAIL_FROM: 'test@example.com',
+  SITE_URL: 'https://site.test/vaksin-app/',
 })
 
 let db: pg.Pool
 let admin: pg.Pool // superuser, only to arrange test situations (expire a code, etc.)
 const outbox: { to: string; code: string }[] = []
+const invites: { to: string; link: string }[] = []
 let app: ReturnType<typeof createApp>
 
 beforeAll(async () => {
@@ -37,7 +38,14 @@ beforeAll(async () => {
   await migrate({ url: dbUrl(env, DB), authenticatorPassword: env.AUTHENTICATOR_PASSWORD, authDbPassword: env.AUTH_DB_PASSWORD, log: () => {} })
   db = new pg.Pool({ connectionString: authUrl })
   admin = new pg.Pool({ connectionString: dbUrl(env, DB) })
-  app = createApp({ config, db, mailer: { sendCode: async (to, code) => void outbox.push({ to, code }) } })
+  app = createApp({
+    config,
+    db,
+    mailer: {
+      sendCode: async (to, code) => void outbox.push({ to, code }),
+      sendInvite: async (to, link) => void invites.push({ to, link }),
+    },
+  })
 }, 60_000)
 
 afterAll(async () => {
@@ -66,16 +74,18 @@ async function signInParent(email = unique()) {
   return { email, ...res.json } as { email: string; access_token: string; refresh_token: string }
 }
 
-async function makeStaff(role: 'officer' | 'platform_admin' = 'officer', password = 'a-long-test-password') {
+async function makeStaff(role: 'officer' | 'platform_admin' = 'officer') {
   const email = unique('staff')
-  const { rows } = await db.query('insert into auth.users (email, password_hash) values ($1, $2) returning id', [email, await hashPassword(password)])
+  const { rows } = await db.query('insert into auth.users (email) values ($1) returning id', [email])
   await db.query('select auth_private.set_staff_role($1, $2, null)', [rows[0].id, role])
-  return { email, password, id: rows[0].id as string }
+  return { email, id: rows[0].id as string }
 }
 
-async function staffSession(password?: string) {
-  const staff = await makeStaff('officer', password)
-  const res = await call('/password', { body: { email: staff.email, password: staff.password } })
+/** Staff sign in like parents: an emailed code (then the authenticator app raises it to aal2). */
+async function staffSession() {
+  const staff = await makeStaff('officer')
+  await call('/email/start', { body: { email: staff.email } })
+  const res = await call('/email/verify', { body: { email: staff.email, code: lastCode(staff.email) } })
   expect(res.status).toBe(200)
   return { ...staff, access: res.json.access_token as string, refresh: res.json.refresh_token as string }
 }
@@ -168,7 +178,7 @@ describe('tokens and sessions', () => {
       unsigned,
       parent.access_token.slice(0, -2) + (parent.access_token.endsWith('A') ? 'BB' : 'AA'),
     ]
-    for (const token of bad) expect((await call('/password/change', { token, body: {} })).json.error).toBe('invalid_token')
+    for (const token of bad) expect((await call('/mfa/enroll', { token })).json.error).toBe('invalid_token')
   })
 
   it('rotates refresh tokens; an old one reused later ends the whole session', async () => {
@@ -184,13 +194,13 @@ describe('tokens and sessions', () => {
     await admin.query(`update auth_private.refresh_tokens set used_at = now() - interval '1 minute' where used_at is not null`)
     expect((await call('/refresh', { body: { refresh_token: parent.refresh_token } })).json.error).toBe('session_revoked')
     expect((await call('/refresh', { body: { refresh_token: first.json.refresh_token } })).json.error).toBe('session_revoked')
-    expect((await call('/password/change', { token: first.json.access_token, body: {} })).json.error).toBe('invalid_token')
+    expect((await call('/mfa/enroll', { token: first.json.access_token })).json.error).toBe('invalid_token')
   })
 
   it('signs out: the access token and refresh token stop working', async () => {
     const parent = await signInParent()
     expect((await call('/logout', { token: parent.access_token })).status).toBe(200)
-    expect((await call('/password/change', { token: parent.access_token, body: {} })).json.error).toBe('invalid_token')
+    expect((await call('/mfa/enroll', { token: parent.access_token })).json.error).toBe('invalid_token')
     expect((await call('/refresh', { body: { refresh_token: parent.refresh_token } })).json.error).toBe('session_revoked')
   })
 
@@ -205,33 +215,27 @@ describe('tokens and sessions', () => {
   })
 })
 
-describe('staff passwords', () => {
-  it('signs staff in and gives parents (no password) the same answer as a wrong password', async () => {
-    const staff = await makeStaff()
-    const ok = await call('/password', { body: { email: staff.email, password: staff.password } })
-    expect(ok.status).toBe(200)
-    expect(ok.json.user.role).toBe('officer')
-    const parent = await signInParent()
-    const a = await call('/password', { body: { email: parent.email, password: 'whatever-password' } })
-    const b = await call('/password', { body: { email: unique(), password: 'whatever-password' } })
-    expect(a).toEqual(b)
-    expect(a.json.error).toBe('invalid_credentials')
-  })
-
-  it('locks for 15 minutes after 5 wrong passwords, even for the right one', async () => {
-    const staff = await makeStaff()
-    for (let i = 0; i < LIMITS.passwordTries; i++) await call('/password', { body: { email: staff.email, password: 'wrong-password!' } })
-    expect((await call('/password', { body: { email: staff.email, password: staff.password } })).json.error).toBe('locked')
-  })
-
-  it('changes the password: checks the old one and length, and signs out other devices', async () => {
+describe('staff sign-in (no passwords)', () => {
+  it('staff sign in with an emailed code, at aal1 until the authenticator app', async () => {
     const staff = await staffSession()
-    const other = await call('/password', { body: { email: staff.email, password: staff.password } })
-    expect((await call('/password/change', { token: staff.access, body: { old_password: staff.password, new_password: 'short' } })).json.error).toBe('weak_password')
-    expect((await call('/password/change', { token: staff.access, body: { old_password: 'not-the-old-one', new_password: 'a-brand-new-password' } })).json.error).toBe('invalid_credentials')
-    expect((await call('/password/change', { token: staff.access, body: { old_password: staff.password, new_password: 'a-brand-new-password' } })).status).toBe(200)
-    expect((await call('/refresh', { body: { refresh_token: other.json.refresh_token } })).json.error).toBe('session_revoked')
-    expect((await call('/password', { body: { email: staff.email, password: 'a-brand-new-password' } })).status).toBe(200)
+    const claims = decodeJwt(staff.access)
+    expect(claims.aal).toBe('aal1')
+    expect((await call('/mfa/enroll', { token: staff.access })).status).toBe(200)
+  })
+
+  it('has no password endpoints any more', async () => {
+    expect((await call('/password', { body: { email: unique(), password: 'whatever-password' } })).status).toBe(404)
+    expect((await call('/password/change', { body: {} })).status).toBe(404)
+  })
+
+  it('an email-code sign-in clears an old temporary password', async () => {
+    const staff = await makeStaff()
+    await admin.query(`update auth.users set password_hash = 'scrypt$old', must_change_password = true where id = $1`, [staff.id])
+    await call('/email/start', { body: { email: staff.email } })
+    const res = await call('/email/verify', { body: { email: staff.email, code: lastCode(staff.email) } })
+    expect(res.json.must_change_password).toBe(false)
+    const { rows } = await admin.query('select password_hash, must_change_password from auth.users where id = $1', [staff.id])
+    expect(rows[0]).toEqual({ password_hash: null, must_change_password: false })
   })
 })
 
@@ -239,18 +243,6 @@ describe('authenticator app (2-step)', () => {
   it('is for staff only', async () => {
     const parent = await signInParent()
     expect((await call('/mfa/enroll', { token: parent.access_token })).json.error).toBe('not_staff')
-  })
-
-  it('needs the temporary password changed first', async () => {
-    const staff = await makeStaff()
-    await db.query('update auth.users set must_change_password = true where id = $1', [staff.id])
-    const signedIn = await call('/password', { body: { email: staff.email, password: staff.password } })
-    expect(signedIn.json.must_change_password).toBe(true)
-    const token = signedIn.json.access_token
-    expect((await call('/mfa/enroll', { token })).json.error).toBe('password_change_required')
-    expect((await call('/mfa/verify', { token, body: { code: '123456' } })).json.error).toBe('password_change_required')
-    await call('/password/change', { token, body: { old_password: staff.password, new_password: 'a-brand-new-password' } })
-    expect((await call('/mfa/enroll', { token })).status).toBe(200)
   })
 
   it('enrols, raises the session to aal2, and refuses a code used twice or out of time', async () => {
@@ -286,3 +278,54 @@ describe('authenticator app (2-step)', () => {
     expect((await call('/mfa/verify', { token: staff.access, body: { code: totp.generate() } })).json.error).toBe('locked')
   })
 })
+
+describe('officer invitations', () => {
+  /** A platform admin signed in with the emailed code and the authenticator app (aal2). */
+  async function adminSession() {
+    const staff = await makeStaff('platform_admin')
+    await call('/email/start', { body: { email: staff.email } })
+    const signedIn = await call('/email/verify', { body: { email: staff.email, code: lastCode(staff.email) } })
+    const token = signedIn.json.access_token as string
+    const totp = totpFor((await call('/mfa/enroll', { token })).json.secret)
+    const twoStep = await call('/mfa/verify', { token, body: { code: totp.generate() } })
+    expect(twoStep.json.aal).toBe('aal2')
+    return { ...staff, aal1: token, aal2: twoStep.json.access_token as string }
+  }
+
+  it('only a platform admin who passed 2-step can invite', async () => {
+    const parent = await signInParent()
+    const officer = await staffSession()
+    const admin = await adminSession()
+    for (const token of [parent.access_token, officer.access, admin.aal1]) {
+      expect((await call('/invite', { token, body: { email: unique('invitee') } })).json.error).toBe('not_allowed')
+    }
+    expect((await call('/invite', { body: { email: unique('invitee') } })).json.error).toBe('invalid_token')
+  })
+
+  it('creates the officer account and emails the officer page link; inviting again resends', async () => {
+    const admin = await adminSession()
+    const email = unique('invitee')
+    const first = await call('/invite', { token: admin.aal2, body: { email: email.toUpperCase() } })
+    expect(first).toEqual({ status: 200, json: { ok: true, already_registered: false } })
+    expect(invites.at(-1)).toEqual({ to: email, link: 'https://site.test/vaksin-app/#/officer' })
+    const { rows } = await admin_query('select p.role from public.profiles p join auth.users u on u.id = p.user_id where u.email = $1', [email])
+    expect(rows[0].role).toBe('officer')
+
+    expect((await call('/invite', { token: admin.aal2, body: { email } })).status).toBe(200)
+    expect(invites.filter((m) => m.to === email)).toHaveLength(2)
+
+    // The invited officer signs in with a code and can go on to set up 2-step.
+    await call('/email/start', { body: { email } })
+    const signedIn = await call('/email/verify', { body: { email, code: lastCode(email) } })
+    expect(signedIn.json.user.role).toBe('officer')
+    expect((await call('/mfa/enroll', { token: signedIn.json.access_token })).status).toBe(200)
+  })
+
+  it('refuses a bad email and an admin account', async () => {
+    const admin = await adminSession()
+    expect((await call('/invite', { token: admin.aal2, body: { email: 'nope' } })).json.error).toBe('invalid_email')
+    expect((await call('/invite', { token: admin.aal2, body: { email: admin.email } })).json.error).toBe('already_admin')
+  })
+})
+
+const admin_query = (sql: string, params: unknown[]) => admin.query(sql, params)

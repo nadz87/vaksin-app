@@ -1,29 +1,36 @@
 import { useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react'
 import { useSearchParams } from 'react-router'
 import { db, errorCode } from '../lib/api'
-import { changePassword, enrollMfa, passwordSignIn, verifyMfa } from '../lib/auth-client'
+import { enrollMfa, inviteOfficer, verifyMfa } from '../lib/auth-client'
 import { useAuth } from '../lib/auth'
 import { useI18n } from '../lib/i18n'
 import { Centered, ErrorText, Loading } from '../components/Layout'
+import { CompleteProfile } from '../components/CompleteProfile'
+import { EmailSignIn } from '../components/EmailSignIn'
 import type { CalSchool } from './officer-calendar'
 import { StudentsTab } from './officer-students'
 import { CalendarScreen, HomeScreen } from './officer-dashboard'
-import { SETTINGS_VIEWS, SettingsScreen } from './officer-settings'
+import { MySchools, SETTINGS_VIEWS, SettingsScreen } from './officer-settings'
 import { Icon, type IconName } from '../components/icons'
 
-type School = { id: string; name: string; slug: string; state: string | null }
 
 /**
- * Officer and platform-admin pages sit behind this gate:
- * password sign-in, then 2-step verification (database rules require aal2).
+ * Officer and platform-admin pages sit behind this gate: an emailed code (no passwords),
+ * then 2-step verification (database rules require aal2), then, for officers, their
+ * profile once.
  */
 export function StaffGate({ allow, children }: { allow: Array<'officer' | 'platform_admin'>; children: ReactNode }) {
   const { t } = useI18n()
-  const { loading, session, profile, aal, mustChangePassword } = useAuth()
+  const { loading, session, profile, aal } = useAuth()
 
   if (loading) return <Loading />
-  if (!session) return <PasswordSignIn />
-  if (mustChangePassword) return <ChangePassword />
+  if (!session) {
+    return (
+      <Centered>
+        <EmailSignIn staff />
+      </Centered>
+    )
+  }
   if (!profile || !allow.includes(profile.role as 'officer' | 'platform_admin')) {
     return (
       <Centered>
@@ -32,90 +39,8 @@ export function StaffGate({ allow, children }: { allow: Array<'officer' | 'platf
     )
   }
   if (aal !== 'aal2') return <TwoStep />
+  if (profile.role === 'officer' && (!profile.full_name || !profile.job_title)) return <CompleteProfile officer />
   return <>{children}</>
-}
-
-function PasswordSignIn() {
-  const { t } = useI18n()
-  const [email, setEmail] = useState('')
-  const [password, setPassword] = useState('')
-  const [busy, setBusy] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-
-  async function submit(e: FormEvent) {
-    e.preventDefault()
-    setBusy(true)
-    setError(null)
-    const { error } = await passwordSignIn(email.trim(), password)
-    setBusy(false)
-    if (error) setError(error)
-  }
-
-  return (
-    <Centered>
-      <form onSubmit={submit} className="space-y-4">
-        <h2 className="text-xl font-bold">{t('officer.title')}</h2>
-        <label className="block">
-          <span className="label">{t('signin.email')}</span>
-          <input className="field" type="email" autoComplete="username" required value={email} onChange={(e) => setEmail(e.target.value)} />
-        </label>
-        <label className="block">
-          <span className="label">{t('officer.password')}</span>
-          <input className="field" type="password" autoComplete="current-password" required value={password} onChange={(e) => setPassword(e.target.value)} />
-        </label>
-        <ErrorText code={error} />
-        <button className="btn-primary" disabled={busy}>
-          {t('officer.signin')}
-        </button>
-      </form>
-    </Centered>
-  )
-}
-
-/** First sign-in with a temporary password: choose a new one before anything else. */
-function ChangePassword() {
-  const { t } = useI18n()
-  const [current, setCurrent] = useState('')
-  const [next, setNext] = useState('')
-  const [again, setAgain] = useState('')
-  const [busy, setBusy] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-
-  async function submit(e: FormEvent) {
-    e.preventDefault()
-    setError(null)
-    if (next.length < 12) return setError('weak_password')
-    if (next !== again) return setError('password_mismatch')
-    setBusy(true)
-    const { error } = await changePassword(current, next)
-    setBusy(false)
-    if (error) setError(error)
-  }
-
-  return (
-    <Centered>
-      <form onSubmit={submit} className="space-y-4">
-        <h2 className="text-xl font-bold">{t('pw.title')}</h2>
-        <p className="text-sm text-muted">{t('pw.body')}</p>
-        <label className="block">
-          <span className="label">{t('pw.current')}</span>
-          <input className="field" type="password" autoComplete="current-password" required value={current} onChange={(e) => setCurrent(e.target.value)} />
-        </label>
-        <label className="block">
-          <span className="label">{t('pw.new')}</span>
-          <input className="field" type="password" autoComplete="new-password" minLength={12} required value={next} onChange={(e) => setNext(e.target.value)} />
-        </label>
-        <label className="block">
-          <span className="label">{t('pw.confirm')}</span>
-          <input className="field" type="password" autoComplete="new-password" minLength={12} required value={again} onChange={(e) => setAgain(e.target.value)} />
-        </label>
-        <ErrorText code={error} />
-        <button className="btn-primary" disabled={busy}>
-          {t('pw.save')}
-        </button>
-      </form>
-    </Centered>
-  )
 }
 
 /** Set up an authenticator app the first time, verify a code every time after. */
@@ -210,13 +135,16 @@ export function OfficerHome() {
     setParams(p, { replace: true })
   }
 
+  // Officers only see the schools they chose; this reloads after they add or leave one.
+  const [reloads, setReloads] = useState(0)
   useEffect(() => {
     db()
       .from('schools')
       .select('id, name, weekend_days')
       .order('name')
       .then(({ data }) => setSchools((data as CalSchool[]) ?? []))
-  }, [])
+  }, [reloads])
+  const schoolsChanged = () => setReloads((n) => n + 1)
 
   if (!schools) return <Loading />
 
@@ -270,7 +198,7 @@ export function OfficerHome() {
         })}
       </nav>
 
-      {schools.length === 0 && <p className="card text-muted">{t('officer.noSchools')}</p>}
+      {schools.length === 0 && <MySchools first mine={[]} onChange={schoolsChanged} />}
 
       {school && section === 'home' && <HomeScreen key={school.id} school={school} go={(s, v) => go({ s, ...(v ? { v } : {}) })} />}
       {school && section === 'calendar' && (
@@ -292,125 +220,231 @@ export function OfficerHome() {
           view={SETTINGS_VIEWS.find((x) => x === view) ?? 'school'}
           onView={(v) => go({ v })}
           onPickSchool={(id) => go({ school: id })}
+          onSchoolsChanged={schoolsChanged}
         />
       )}
     </div>
   )
 }
 
-/** iMotion platform admin: create schools, share links, assign the officer. */
-export function AdminSchools() {
+type Officer = {
+  user_id: string
+  email: string
+  full_name: string | null
+  phone: string | null
+  job_title: string | null
+  active: boolean
+  registered: boolean
+  two_step: boolean
+  invited_at: string
+  last_sign_in_at: string | null
+  schools: Array<{ id: string; name: string }>
+}
+
+/**
+ * iMotion platform admin: invite health officers by email and see their profiles.
+ * Officers complete their own profile and choose their schools.
+ */
+export function AdminOfficers() {
   const { t } = useI18n()
-  const [schools, setSchools] = useState<School[] | null>(null)
-  const [name, setName] = useState('')
-  const [slug, setSlug] = useState('')
-  const [state, setState] = useState('')
-  const [weekend, setWeekend] = useState('6,7')
+  const [officers, setOfficers] = useState<Officer[] | null>(null)
   const [error, setError] = useState<string | null>(null)
 
   async function load() {
-    const { data } = await db().from('schools').select('id, name, slug, state').order('name')
-    setSchools((data as School[]) ?? [])
+    const { data, error } = await db().rpc('admin_officers')
+    if (error) return setError(errorCode(error))
+    setOfficers((data as Officer[]) ?? [])
   }
   useEffect(() => {
     load()
   }, [])
 
-  async function create(e: FormEvent) {
-    e.preventDefault()
-    setError(null)
-    const { error } = await db()
-      .from('schools')
-      .insert({ name: name.trim(), slug: slug.trim().toLowerCase(), state: state.trim() || null, weekend_days: weekend.split(',').map(Number) })
-    if (error) return setError('generic')
-    setName('')
-    setSlug('')
-    setState('')
-    load()
-  }
-
-  if (!schools) return <Loading />
+  const registered = (officers ?? []).filter((o) => o.registered)
+  const waiting = (officers ?? []).filter((o) => !o.registered)
 
   return (
-    <div className="space-y-6">
+    <div className="mx-auto max-w-3xl space-y-6 pb-10">
       <h1 className="text-2xl font-bold">{t('admin.title')}</h1>
+      <InviteOfficer onInvited={load} />
 
-      <form onSubmit={create} className="card grid gap-3 sm:grid-cols-2">
-        <h2 className="font-semibold sm:col-span-2">{t('admin.newSchool')}</h2>
-        <label className="block">
-          <span className="label">{t('admin.name')}</span>
-          <input className="field" required value={name} onChange={(e) => setName(e.target.value)} />
-        </label>
-        <label className="block">
-          <span className="label">{t('admin.slug')}</span>
-          <input className="field" required pattern="[a-z0-9-]{3,40}" value={slug} onChange={(e) => setSlug(e.target.value)} />
-        </label>
-        <label className="block">
-          <span className="label">{t('admin.state')}</span>
-          <input className="field" value={state} onChange={(e) => setState(e.target.value)} />
-        </label>
-        <label className="block">
-          <span className="label">{t('admin.weekend')}</span>
-          <select className="field" value={weekend} onChange={(e) => setWeekend(e.target.value)}>
-            <option value="6,7">{t('admin.weekendSatSun')}</option>
-            <option value="5,6">{t('admin.weekendFriSat')}</option>
-          </select>
-        </label>
-        <div className="sm:col-span-2">
-          <ErrorText code={error} />
-          <button className="btn-primary mt-2 sm:w-auto">{t('admin.create')}</button>
-        </div>
-      </form>
-
-      <h2 className="font-semibold text-muted">{t('admin.schools')}</h2>
-      <div className="space-y-4">
-        {schools.map((s) => (
-          <AdminSchoolCard key={s.id} school={s} />
+      <section className="space-y-3">
+        <h2 className="text-lg font-bold">
+          {t('admin.officers')} {officers && <span className="font-normal text-muted">({registered.length})</span>}
+        </h2>
+        <ErrorText code={error} />
+        {!officers && !error && <Loading />}
+        {officers && registered.length === 0 && <p className="card text-muted">{t('admin.noOfficers')}</p>}
+        {registered.map((o) => (
+          <OfficerCard key={o.user_id} officer={o} onChange={load} />
         ))}
-      </div>
+      </section>
+
+      {waiting.length > 0 && (
+        <section className="space-y-3">
+          <h2 className="text-lg font-bold">
+            {t('admin.waiting')} <span className="font-normal text-muted">({waiting.length})</span>
+          </h2>
+          <p className="text-sm text-muted">{t('admin.waitingBody')}</p>
+          {waiting.map((o) => (
+            <WaitingCard key={o.user_id} officer={o} />
+          ))}
+        </section>
+      )}
     </div>
   )
 }
 
-function AdminSchoolCard({ school }: { school: School }) {
+function InviteOfficer({ onInvited }: { onInvited: () => void }) {
   const { t } = useI18n()
   const [email, setEmail] = useState('')
-  const [msg, setMsg] = useState<string | null>(null)
+  const [busy, setBusy] = useState(false)
+  const [sent, setSent] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
-  const link = `${location.origin}${import.meta.env.BASE_URL}#/s/${school.slug}`
 
-  async function assign(e: FormEvent) {
+  async function submit(e: FormEvent) {
     e.preventDefault()
-    setMsg(null)
+    setBusy(true)
     setError(null)
-    const { error } = await db().rpc('admin_assign_officer', { p_email: email, p_school: school.id })
-    if (error) return setError(errorCode(error))
+    setSent(null)
+    const { error } = await inviteOfficer(email.trim())
+    setBusy(false)
+    if (error) return setError(error)
+    setSent(email.trim().toLowerCase())
     setEmail('')
-    setMsg(t('admin.assigned'))
+    onInvited()
   }
 
   return (
-    <div className="card space-y-3">
-      <p className="font-semibold">{school.name}</p>
-      <p className="text-sm">
-        <span className="text-muted">{t('admin.link')}: </span>
-        <a className="break-all text-primary" href={link}>
-          {link}
-        </a>
-      </p>
-      <form onSubmit={assign} className="flex flex-col gap-2 sm:flex-row">
+    <form onSubmit={submit} className="card space-y-3">
+      <h2 className="text-lg font-bold">{t('admin.inviteTitle')}</h2>
+      <p className="text-sm text-muted">{t('admin.inviteBody')}</p>
+      <div className="flex flex-col gap-2 sm:flex-row">
         <input
           className="field"
           type="email"
-          placeholder={t('admin.assignOfficer')}
+          inputMode="email"
+          autoComplete="off"
+          aria-label={t('admin.inviteEmail')}
+          placeholder={t('admin.inviteEmail')}
           required
           value={email}
           onChange={(e) => setEmail(e.target.value)}
         />
-        <button className="btn-ghost sm:w-auto">{t('admin.assign')}</button>
-      </form>
-      {msg && <p className="text-sm text-success">{msg}</p>}
+        <button className="btn-primary sm:w-auto" disabled={busy || !email.includes('@')}>
+          {t('admin.inviteSend')}
+        </button>
+      </div>
+      {sent && <p className="text-sm text-success">{t('admin.inviteSent').replace('{e}', sent)}</p>}
       <ErrorText code={error} />
+    </form>
+  )
+}
+
+function dateText(iso: string, lang: string) {
+  return new Date(iso).toLocaleDateString(lang === 'ms' ? 'ms-MY' : 'en-MY', {
+    timeZone: 'Asia/Kuala_Lumpur',
+    day: 'numeric',
+    month: 'short',
+    year: 'numeric',
+  })
+}
+
+function OfficerCard({ officer: o, onChange }: { officer: Officer; onChange: () => void }) {
+  const { t, lang } = useI18n()
+  const [error, setError] = useState<string | null>(null)
+  const name = o.full_name ?? o.email
+
+  async function run(fn: string, args: Record<string, unknown>, confirmKey: string) {
+    if (!window.confirm(t(confirmKey).replace('{n}', name))) return
+    setError(null)
+    const { error } = await db().rpc(fn, args)
+    if (error) return setError(errorCode(error))
+    onChange()
+  }
+
+  return (
+    <article className={`card space-y-3 ${o.active ? '' : 'opacity-70'}`}>
+      <div className="flex items-start gap-3">
+        <div className="grid h-11 w-11 shrink-0 place-items-center rounded-full bg-primary-soft font-bold text-primary">
+          {name.slice(0, 1).toUpperCase()}
+        </div>
+        <div className="min-w-0 flex-1">
+          <p className="truncate font-semibold">{name}</p>
+          <p className="text-sm text-muted">{o.job_title ?? t('admin.noTitle')}</p>
+        </div>
+        <span
+          className={`shrink-0 rounded-full px-2.5 py-1 text-xs font-semibold ${
+            !o.active ? 'bg-page text-muted' : o.two_step ? 'bg-success/15 text-success' : 'bg-page text-muted'
+          }`}
+        >
+          {!o.active ? t('admin.disabled') : o.two_step ? t('admin.twoStepOn') : t('admin.twoStepOff')}
+        </span>
+      </div>
+
+      <dl className="grid gap-x-4 gap-y-1 text-sm sm:grid-cols-[auto_1fr]">
+        <dt className="text-muted">{t('signin.email')}</dt>
+        <dd className="break-all">{o.email}</dd>
+        <dt className="text-muted">{t('profile.phone')}</dt>
+        <dd>{o.phone ?? '—'}</dd>
+        <dt className="text-muted">{t('admin.schoolsServed')}</dt>
+        <dd>{o.schools.length ? o.schools.map((s) => s.name).join(', ') : t('admin.noSchools')}</dd>
+        <dt className="text-muted">{t('admin.lastSignIn')}</dt>
+        <dd>{o.last_sign_in_at ? dateText(o.last_sign_in_at, lang) : '—'}</dd>
+      </dl>
+
+      <div className="flex flex-wrap gap-x-4 gap-y-2 border-t border-line pt-3 text-sm font-semibold">
+        {o.two_step && o.active && (
+          <button type="button" className="text-primary" onClick={() => run('admin_reset_officer_two_step', { p_officer: o.user_id }, 'admin.resetConfirm')}>
+            {t('admin.resetTwoStep')}
+          </button>
+        )}
+        {o.active ? (
+          <button
+            type="button"
+            className="text-danger"
+            onClick={() => run('admin_set_officer_active', { p_officer: o.user_id, p_active: false }, 'admin.disableConfirm')}
+          >
+            {t('admin.disable')}
+          </button>
+        ) : (
+          <button
+            type="button"
+            className="text-primary"
+            onClick={() => run('admin_set_officer_active', { p_officer: o.user_id, p_active: true }, 'admin.enableConfirm')}
+          >
+            {t('admin.enable')}
+          </button>
+        )}
+      </div>
+      <ErrorText code={error} />
+    </article>
+  )
+}
+
+/** Invited but not signed in yet: resend the invitation. */
+function WaitingCard({ officer: o }: { officer: Officer }) {
+  const { t, lang } = useI18n()
+  const [state, setState] = useState<'idle' | 'busy' | 'sent'>('idle')
+  const [error, setError] = useState<string | null>(null)
+
+  async function resend() {
+    setState('busy')
+    setError(null)
+    const { error } = await inviteOfficer(o.email)
+    setState(error ? 'idle' : 'sent')
+    if (error) setError(error)
+  }
+
+  return (
+    <div className="card flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+      <div className="min-w-0">
+        <p className="break-all font-medium">{o.email}</p>
+        <p className="text-sm text-muted">{t('admin.invitedOn').replace('{d}', dateText(o.invited_at, lang))}</p>
+        <ErrorText code={error} />
+      </div>
+      <button type="button" className="btn-ghost shrink-0 sm:w-auto" disabled={state !== 'idle'} onClick={resend}>
+        {state === 'sent' ? t('admin.resent') : t('admin.resend')}
+      </button>
     </div>
   )
 }

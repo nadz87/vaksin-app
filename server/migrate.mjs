@@ -1,7 +1,7 @@
 // Applies the database setup to a plain Postgres server (no Supabase):
 //   1. server/platform.sql   (roles, auth schema, auth.uid(): what Supabase used to provide)
 //   2. supabase/migrations/*.sql in name order
-//   3. server/auth-schema.sql (sign-in service tables and role; needs public.profiles)
+//   3. server/auth-schema.sql, server/auth-officers.sql (sign-in service; need public.profiles)
 //   4. supabase/seed.sql      only with --seed (demo data, local development only)
 // Each file runs in its own transaction and is recorded in migrations.applied with a
 // checksum, so running it again only applies new files. An applied file that was edited
@@ -89,8 +89,10 @@ export async function migrate({ url, authenticatorPassword, authDbPassword, seed
         count++
       }
     }
-    if (await applyFile(client, 'auth-schema.sql', readFileSync(`${root}server/auth-schema.sql`, 'utf8'), done)) {
-      log('applied auth-schema.sql')
+    // Sign-in service files: they need public.profiles, so they come after the migrations.
+    // Add new ones at the end of this list; never edit one that production already has.
+    for (const name of ['auth-schema.sql', 'auth-officers.sql']) {
+      if (await applyFile(client, name, readFileSync(`${root}server/${name}`, 'utf8'), done)) log(`applied ${name}`)
     }
     await setPassword(client, 'vaksin_auth', authDbPassword)
     if (seed && (await applyFile(client, 'seed.sql', readFileSync(`${root}supabase/seed.sql`, 'utf8'), done))) {

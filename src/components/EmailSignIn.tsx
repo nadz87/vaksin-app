@@ -4,10 +4,11 @@ import { useI18n } from '../lib/i18n'
 import { ErrorText } from './Layout'
 
 /**
- * Parent sign-in and sign-up in one: email, then a 6-digit code. A new email
+ * Sign-in and sign-up in one: email, then a 6-digit code. A new parent email
  * gets an account automatically; name and phone are asked next (CompleteProfile).
+ * `staff`: the officer and admin pages (accounts come from an invitation).
  */
-export function EmailSignIn({ onSignedIn }: { onSignedIn?: () => void }) {
+export function EmailSignIn({ onSignedIn, staff = false }: { onSignedIn?: () => void; staff?: boolean }) {
   const { t } = useI18n()
   const [email, setEmail] = useState('')
   const [code, setCode] = useState('')
@@ -38,8 +39,8 @@ export function EmailSignIn({ onSignedIn }: { onSignedIn?: () => void }) {
   if (!sent) {
     return (
       <form onSubmit={send} className="space-y-4">
-        <h2 className="text-xl font-bold">{t('signin.title')}</h2>
-        <p className="text-sm text-muted">{t('signin.newHint')}</p>
+        <h2 className="text-xl font-bold">{t(staff ? 'officer.title' : 'signin.title')}</h2>
+        <p className="text-sm text-muted">{t(staff ? 'officer.codeHint' : 'signin.newHint')}</p>
         <label className="block">
           <span className="label">{t('signin.email')}</span>
           <input
@@ -62,7 +63,7 @@ export function EmailSignIn({ onSignedIn }: { onSignedIn?: () => void }) {
 
   return (
     <form onSubmit={verify} className="space-y-4">
-      <h2 className="text-xl font-bold">{t('signin.title')}</h2>
+      <h2 className="text-xl font-bold">{t(staff ? 'officer.title' : 'signin.title')}</h2>
       <p className="text-sm text-muted">
         {t('signin.sent')} <strong className="text-ink">{email}</strong>
       </p>
