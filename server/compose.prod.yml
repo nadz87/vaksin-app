@@ -1,0 +1,108 @@
+# Vaksin App backend in production (the iMotion office PC, behind the Cloudflare Tunnel).
+# Run it with `node server/prod.mjs up`, which reads secrets from D:\VPS\vaksin\.env
+# (outside the repository) and applies the migrations before starting the services.
+#
+# Only two ports are opened, both on 127.0.0.1 (this PC only, never the network):
+#   4010   gateway; the tunnel sends https://vaksin.imotion.my here
+#   55433  database, for migrations and maintenance from this PC
+name: vaksin
+
+x-common: &common
+  restart: always
+  logging:
+    driver: json-file
+    options: { max-size: 10m, max-file: "3" }
+
+services:
+  db:
+    <<: *common
+    build: ./db
+    image: vaksin-db:17.11
+    mem_limit: 1g
+    environment:
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?missing in .env}
+      POSTGRES_DB: vaksin
+      TZ: Asia/Kuala_Lumpur
+    ports:
+      - "127.0.0.1:55433:5432"
+    volumes:
+      - db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d vaksin"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  rest:
+    <<: *common
+    image: postgrest/postgrest:v16.5
+    mem_limit: 256m
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      PGRST_DB_URI: postgres://authenticator:${AUTHENTICATOR_PASSWORD:?missing in .env}@db:5432/vaksin
+      PGRST_DB_SCHEMAS: public
+      PGRST_DB_ANON_ROLE: anon
+      PGRST_JWT_SECRET: ${JWT_SECRET:?missing in .env}
+      PGRST_JWT_AUD: authenticated
+      PGRST_DB_MAX_ROWS: "1000"
+      PGRST_OPENAPI_MODE: disabled
+
+  auth:
+    <<: *common
+    build: ./auth
+    image: vaksin-auth:prod
+    mem_limit: 256m
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://vaksin_auth:${AUTH_DB_PASSWORD:?missing in .env}@db:5432/vaksin
+      JWT_SECRET: ${JWT_SECRET}
+      OTP_PEPPER: ${OTP_PEPPER:?missing in .env}
+      TOTP_ENC_KEY: ${TOTP_ENC_KEY:?missing in .env}
+      SMTP_HOST: ${SMTP_HOST:-smtp-relay.brevo.com}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASS: ${SMTP_PASS:-}
+      MAIL_FROM: ${MAIL_FROM:-Vaksin App <no-reply@imotion.my>}
+
+  gateway:
+    <<: *common
+    image: nginx:1.29.3-alpine
+    mem_limit: 128m
+    depends_on: [rest, auth]
+    environment:
+      CORS_ORIGIN: ${CORS_ORIGIN:-https://nadz87.github.io}
+      # Behind Cloudflare the visitor's address arrives in CF-Connecting-IP.
+      CLIENT_IP: $$http_cf_connecting_ip
+    ports:
+      - "127.0.0.1:4010:8080"
+    volumes:
+      - ./gateway/default.conf.template:/etc/nginx/templates/default.conf.template:ro
+
+  backup:
+    <<: *common
+    build: ./backup
+    image: vaksin-backup:prod
+    mem_limit: 256m
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      TZ: Asia/Kuala_Lumpur
+      PGPASSWORD: ${DB_PASSWORD}
+      AGE_RECIPIENT: ${AGE_RECIPIENT:-}
+      R2_BUCKET: ${R2_BUCKET:-}
+      RCLONE_CONFIG_R2_TYPE: s3
+      RCLONE_CONFIG_R2_PROVIDER: Cloudflare
+      RCLONE_CONFIG_R2_ENDPOINT: https://${R2_ACCOUNT_ID:-unset}.r2.cloudflarestorage.com
+      RCLONE_CONFIG_R2_ACCESS_KEY_ID: ${R2_ACCESS_KEY_ID:-}
+      RCLONE_CONFIG_R2_SECRET_ACCESS_KEY: ${R2_SECRET_ACCESS_KEY:-}
+      RCLONE_CONFIG_R2_NO_CHECK_BUCKET: "true"
+    volumes:
+      - ${BACKUP_DIR:?set by prod.mjs}:/backups
+
+volumes:
+  db-data:
