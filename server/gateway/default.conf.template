@@ -1,0 +1,45 @@
+# Vaksin App gateway. The nginx image fills in ${CORS_ORIGIN} at start-up.
+#   /rest/  -> PostgREST (database API)
+#   /auth/  -> sign-in service (Phase B; 503 until then)
+#   anything else -> 404
+
+# Only the website's own address may call the API from a browser.
+map $http_origin $cors_origin {
+  default "";
+  "${CORS_ORIGIN}" $http_origin;
+}
+
+server {
+  listen 8080;
+  server_tokens off;
+  client_max_body_size 100k;
+
+  add_header Access-Control-Allow-Origin $cors_origin always;
+  add_header Access-Control-Allow-Headers "Authorization, Content-Type, Prefer, Range, Accept-Profile, Content-Profile" always;
+  add_header Access-Control-Allow-Methods "GET, POST, PATCH, DELETE, OPTIONS" always;
+  add_header Access-Control-Expose-Headers "Content-Range" always;
+  add_header Access-Control-Max-Age 600 always;
+  add_header Vary Origin always;
+  add_header X-Content-Type-Options nosniff always;
+
+  # Browser pre-flight checks get an empty answer with the headers above.
+  if ($request_method = OPTIONS) {
+    return 204;
+  }
+
+  location /rest/ {
+    proxy_pass http://rest:3000/;
+    proxy_set_header Host $host;
+    proxy_hide_header Access-Control-Allow-Origin;
+  }
+
+  location /auth/ {
+    default_type application/json;
+    return 503 '{"error":"auth_not_ready"}';
+  }
+
+  location / {
+    default_type application/json;
+    return 404 '{"error":"not_found"}';
+  }
+}

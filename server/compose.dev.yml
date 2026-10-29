@@ -1,0 +1,52 @@
+# Vaksin App backend for local development: database, database API, gateway.
+# Start with `npm run api:up` (it creates server/.env.dev with random secrets first).
+# Everything is bound to 127.0.0.1 only. Production gets its own compose file in Phase D.
+name: vaksin-dev
+
+services:
+  db:
+    build: ./db
+    image: vaksin-db:17.11
+    restart: unless-stopped
+    environment:
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?run npm run api:up}
+      POSTGRES_DB: vaksin
+    ports:
+      - "127.0.0.1:55432:5432"
+    volumes:
+      - db-data:/var/lib/postgresql/data
+      - ../supabase/tests:/tests:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d vaksin"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  rest:
+    image: postgrest/postgrest:v16.5
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      PGRST_DB_URI: postgres://authenticator:${AUTHENTICATOR_PASSWORD}@db:5432/vaksin
+      PGRST_DB_SCHEMAS: public
+      PGRST_DB_ANON_ROLE: anon
+      PGRST_JWT_SECRET: ${JWT_SECRET}
+      PGRST_JWT_AUD: authenticated
+      PGRST_DB_MAX_ROWS: "1000"
+      PGRST_OPENAPI_MODE: disabled
+
+  gateway:
+    image: nginx:1.29.3-alpine
+    restart: unless-stopped
+    depends_on: [rest]
+    environment:
+      CORS_ORIGIN: http://localhost:5173
+    ports:
+      - "127.0.0.1:4011:8080"
+    volumes:
+      - ./gateway/default.conf.template:/etc/nginx/templates/default.conf.template:ro
+
+volumes:
+  db-data:
