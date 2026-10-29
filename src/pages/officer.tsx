@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react'
 import { useSearchParams } from 'react-router'
-import { db, errorCode } from '../lib/supabase'
+import { db, errorCode } from '../lib/api'
+import { changePassword, enrollMfa, passwordSignIn, verifyMfa } from '../lib/auth-client'
 import { useAuth } from '../lib/auth'
 import { useI18n } from '../lib/i18n'
 import { Centered, ErrorText, Loading } from '../components/Layout'
@@ -18,10 +19,11 @@ type School = { id: string; name: string; slug: string; state: string | null }
  */
 export function StaffGate({ allow, children }: { allow: Array<'officer' | 'platform_admin'>; children: ReactNode }) {
   const { t } = useI18n()
-  const { loading, session, profile, aal } = useAuth()
+  const { loading, session, profile, aal, mustChangePassword } = useAuth()
 
   if (loading) return <Loading />
   if (!session) return <PasswordSignIn />
+  if (mustChangePassword) return <ChangePassword />
   if (!profile || !allow.includes(profile.role as 'officer' | 'platform_admin')) {
     return (
       <Centered>
@@ -44,9 +46,9 @@ function PasswordSignIn() {
     e.preventDefault()
     setBusy(true)
     setError(null)
-    const { error } = await db().auth.signInWithPassword({ email: email.trim(), password })
+    const { error } = await passwordSignIn(email.trim(), password)
     setBusy(false)
-    if (error) setError('generic')
+    if (error) setError(error)
   }
 
   return (
@@ -70,47 +72,90 @@ function PasswordSignIn() {
   )
 }
 
-/** Enrol an authenticator app the first time, verify a code every time after. */
+/** First sign-in with a temporary password: choose a new one before anything else. */
+function ChangePassword() {
+  const { t } = useI18n()
+  const [current, setCurrent] = useState('')
+  const [next, setNext] = useState('')
+  const [again, setAgain] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  async function submit(e: FormEvent) {
+    e.preventDefault()
+    setError(null)
+    if (next.length < 12) return setError('weak_password')
+    if (next !== again) return setError('password_mismatch')
+    setBusy(true)
+    const { error } = await changePassword(current, next)
+    setBusy(false)
+    if (error) setError(error)
+  }
+
+  return (
+    <Centered>
+      <form onSubmit={submit} className="space-y-4">
+        <h2 className="text-xl font-bold">{t('pw.title')}</h2>
+        <p className="text-sm text-muted">{t('pw.body')}</p>
+        <label className="block">
+          <span className="label">{t('pw.current')}</span>
+          <input className="field" type="password" autoComplete="current-password" required value={current} onChange={(e) => setCurrent(e.target.value)} />
+        </label>
+        <label className="block">
+          <span className="label">{t('pw.new')}</span>
+          <input className="field" type="password" autoComplete="new-password" minLength={12} required value={next} onChange={(e) => setNext(e.target.value)} />
+        </label>
+        <label className="block">
+          <span className="label">{t('pw.confirm')}</span>
+          <input className="field" type="password" autoComplete="new-password" minLength={12} required value={again} onChange={(e) => setAgain(e.target.value)} />
+        </label>
+        <ErrorText code={error} />
+        <button className="btn-primary" disabled={busy}>
+          {t('pw.save')}
+        </button>
+      </form>
+    </Centered>
+  )
+}
+
+/** Set up an authenticator app the first time, verify a code every time after. */
 function TwoStep() {
   const { t } = useI18n()
-  const { refresh } = useAuth()
-  const [factorId, setFactorId] = useState<string | null>(null)
+  const [mode, setMode] = useState<'loading' | 'enrol' | 'verify'>('loading')
   const [qr, setQr] = useState<string | null>(null)
+  const [secret, setSecret] = useState<string | null>(null)
   const [code, setCode] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
-  // React dev mode runs effects twice; two enrolments at once would invalidate each other.
+  // React dev mode runs effects twice; a second set-up would replace the first secret,
+  // leaving the QR code on screen out of date.
   const started = useRef(false)
   useEffect(() => {
     if (started.current) return
     started.current = true
     ;(async () => {
-      const mfa = db().auth.mfa
-      const { data } = await mfa.listFactors()
-      const verified = data?.totp?.[0]
-      if (verified) return setFactorId(verified.id)
-      // Clear half-finished enrolments, then start a fresh one.
-      for (const f of data?.all ?? []) if (f.status === 'unverified') await mfa.unenroll({ factorId: f.id })
-      const { data: enrolled, error } = await mfa.enroll({ factorType: 'totp', friendlyName: 'Vaksin App' })
-      if (error || !enrolled) return setError('generic')
-      setFactorId(enrolled.id)
-      setQr(enrolled.totp.qr_code)
+      const { data, error } = await enrollMfa()
+      if (error === 'mfa_already_enrolled') return setMode('verify')
+      if (error || !data) return setError(error ?? 'generic')
+      const QRCode = await import('qrcode')
+      setQr(await QRCode.toDataURL(data.uri, { margin: 1, width: 384 }))
+      setSecret(data.secret)
+      setMode('enrol')
     })()
   }, [])
 
   async function submit(e: FormEvent) {
     e.preventDefault()
-    if (!factorId) return
     setBusy(true)
     setError(null)
-    const { error } = await db().auth.mfa.challengeAndVerify({ factorId, code })
+    // On success the stored session becomes aal2 and the gate opens by itself.
+    const { error } = await verifyMfa(code)
     setBusy(false)
-    if (error) return setError('otp')
-    await refresh()
+    if (error) setError(error === 'mfa_invalid' ? 'otp' : error)
   }
 
-  if (!factorId) return error ? <ErrorText code={error} /> : <Loading />
+  if (mode === 'loading') return error ? <Centered><ErrorText code={error} /></Centered> : <Loading />
 
   return (
     <Centered>
@@ -118,6 +163,11 @@ function TwoStep() {
         <h2 className="text-xl font-bold">{qr ? t('mfa.enrollTitle') : t('mfa.verifyTitle')}</h2>
         <p className="text-sm text-muted">{qr ? t('mfa.enrollBody') : t('mfa.verifyBody')}</p>
         {qr && <img src={qr} alt="QR" className="mx-auto h-48 w-48 rounded-xl bg-white p-2" />}
+        {secret && (
+          <p className="text-center text-xs text-muted">
+            {t('mfa.manual')} <code className="break-all font-mono text-ink">{secret.replace(/(.{4})/g, '$1 ').trim()}</code>
+          </p>
+        )}
         <input
           className="field text-center text-2xl tracking-[0.4em]"
           inputMode="numeric"

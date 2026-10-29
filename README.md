@@ -2,7 +2,8 @@
 
 School health appointments: parents book, the health officer manages
 availability across several schools. Browser-first web app (no install),
-hosted on GitHub Pages, backend on Supabase.
+hosted on GitHub Pages; the backend (Postgres, PostgREST and our own sign-in
+service) runs in Docker on the iMotion server.
 
 - Live site: https://nadz87.github.io/vaksin-app/
 - Going live and first accounts: [DEPLOY.md](DEPLOY.md)
@@ -13,23 +14,37 @@ Needs Node 24 and Docker Desktop running.
 
 ```bash
 npm install
-npx supabase start          # local database, auth and test mailbox
-npx supabase status -o env  # copy API_URL and ANON_KEY into .env.local (see .env.example)
-npm run dev                 # http://localhost:5173/vaksin-app/
+npm --prefix server/auth install
+npm run api:up      # database, database API, sign-in service, test inbox, gateway
+npm run dev         # http://localhost:5173/vaksin-app/
 ```
 
-- Test mailbox (sign-in codes): http://127.0.0.1:54324
-- Demo school links: `#/s/sk-taman-demo`, `#/s/smk-bukit-contoh`
+Put `VITE_API_URL=http://127.0.0.1:4011` in `.env.local` (see `.env.example`).
+`npm run api:up` creates `server/.env.dev` with random local secrets the first
+time, applies every migration and the demo data. `npm run api:down` stops it;
+the data is kept.
+
+- Test inbox (sign-in codes): http://127.0.0.1:8025 (no email leaves this PC)
+- Demo school link: `#/s/sk-putrajaya-presint-8-1`
 - Officer area: `#/officer` · Platform admin: `#/admin`
-- Test staff accounts (local database only): `node scripts/create-local-staff.mjs`
-  creates `pegawai@test.local` (officer) and `admin@test.local` (admin). Both
-  must set up an authenticator app on first sign-in.
+- Staff accounts are made on the server with the sign-in service's CLI, which
+  prints a temporary password once:
+
+  ```bash
+  docker exec vaksin-dev-auth-1 node src/cli.ts create-staff --email pegawai.demo@test.local --role officer
+  ```
+
+  The demo officer in the seed data already serves every school. On first
+  sign-in they change the password, then set up an authenticator app.
+  Other commands: `reset-mfa`, `disable`, `enable` (see `server/auth/src/cli.ts`).
 
 ## Tests
 
 ```bash
-npm test             # unit tests (MyKid parsing)
-npx supabase test db # database security rules (pgTAP)
+npm test               # website unit tests (MyKid parsing, phone numbers)
+npm run api:db-test    # database security rules (pgTAP, 97 tests)
+npm run api:auth-test  # sign-in service security tests
+npm run api:check      # end to end through the gateway (needs api:up)
 ```
 
 ## Routes
@@ -44,24 +59,23 @@ npx supabase test db # database security rules (pgTAP)
 | `#/officer/student/<id>` | Patient profile (logged) |
 | `#/admin` | iMotion platform admin |
 
-## Making the first platform admin
+## Backend layout
 
-1. Sign in once with the admin's email (parent sign-in creates the account).
-2. In the Supabase SQL editor:
-   `update profiles set role = 'platform_admin' where email = 'you@example.com';`
-3. Set a password for that user in Supabase Auth, then sign in at `#/admin`
-   and set up the authenticator app.
-
-Officers: invite the user from Supabase Auth (they set a password), then
-assign them to a school from `#/admin`.
+| Path | What |
+|---|---|
+| `supabase/migrations/` | Tables, row-level security, booking rules (plain Postgres; the folder keeps its old name) |
+| `server/platform.sql`, `server/auth-schema.sql` | Roles and sign-in tables that Supabase used to provide |
+| `server/auth/` | Sign-in service: email codes, staff passwords, authenticator app, tokens |
+| `server/gateway/` | nginx: `/rest/` to PostgREST, `/auth/` to the sign-in service, allowed origins |
+| `server/compose.dev.yml` | Local stack (everything bound to 127.0.0.1) |
 
 ## Deploy
 
 Push to `main` runs `.github/workflows/deploy.yml`: safety check (no
-spreadsheets/CSV/env files), unit tests, build, deploy to Pages. Set repo
-Actions **variables** `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY`;
-without them the site shows "System is being set up".
+spreadsheets/CSV/env files), unit tests, build, deploy to Pages. Set the repo
+Actions **variable** `VITE_API_URL` to the backend's address; without it the
+site shows "System is being set up".
 
 Rules: never commit real student data or exports. Before real data, make
 the repo private (needs GitHub Pro for Pages) and move hosting off Pages
-before the first paying school (see PLAN.md 3a).
+before the first paying school.

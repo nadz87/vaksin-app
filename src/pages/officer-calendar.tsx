@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState, type FormEvent } from 'react'
-import { db, errorCode } from '../lib/supabase'
+import { db, errorCode } from '../lib/api'
 import { useAuth } from '../lib/auth'
 import { useI18n } from '../lib/i18n'
 import { addDays, isoWeekday, shortDate, todayKey, weekdayName } from '../lib/time'

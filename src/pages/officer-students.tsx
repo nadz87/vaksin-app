@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Link, useParams, useSearchParams } from 'react-router'
-import { db, errorCode } from '../lib/supabase'
+import { db, errorCode } from '../lib/api'
 import { useI18n } from '../lib/i18n'
 import { displayMyPhone } from '../lib/phone'
 import { addDays, dayKey, formatDate, formatTime, todayKey } from '../lib/time'

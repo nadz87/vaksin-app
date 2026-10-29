@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react'
 import { Link } from 'react-router'
-import { db, errorCode } from '../lib/supabase'
+import { db, errorCode } from '../lib/api'
 import { useI18n } from '../lib/i18n'
 import { addDays, dayKey, formatDate, formatMonth, formatTime, isoWeekday, monthDays, shiftMonth, shortDate, tileLabel, todayKey, weekStart } from '../lib/time'
 import { Icon } from '../components/icons'

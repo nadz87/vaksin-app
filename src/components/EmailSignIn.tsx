@@ -1,5 +1,5 @@
 import { useState, type FormEvent } from 'react'
-import { db } from '../lib/supabase'
+import { startEmail, verifyEmail } from '../lib/auth-client'
 import { useI18n } from '../lib/i18n'
 import { ErrorText } from './Layout'
 
@@ -19,9 +19,9 @@ export function EmailSignIn({ onSignedIn }: { onSignedIn?: () => void }) {
     e.preventDefault()
     setBusy(true)
     setError(null)
-    const { error } = await db().auth.signInWithOtp({ email: email.trim(), options: { shouldCreateUser: true } })
+    const { error } = await startEmail(email.trim())
     setBusy(false)
-    if (error) setError('generic')
+    if (error) setError(error)
     else setSent(true)
   }
 
@@ -29,9 +29,9 @@ export function EmailSignIn({ onSignedIn }: { onSignedIn?: () => void }) {
     e.preventDefault()
     setBusy(true)
     setError(null)
-    const { error } = await db().auth.verifyOtp({ email: email.trim(), token: code.trim(), type: 'email' })
+    const { error } = await verifyEmail(email.trim(), code.trim())
     setBusy(false)
-    if (error) setError('otp')
+    if (error) setError(error === 'otp_invalid' ? 'otp' : error)
     else onSignedIn?.()
   }
 

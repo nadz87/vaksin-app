@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react'
 import { createHashRouter, Navigate, Outlet, RouterProvider } from 'react-router'
-import { supabase } from './lib/supabase'
+import { apiReady } from './lib/api'
 import { useAuth } from './lib/auth'
 import { useI18n } from './lib/i18n'
 import { Centered, Loading, Shell } from './components/Layout'
@@ -38,7 +38,7 @@ const router = createHashRouter([
 ])
 
 export default function App() {
-  if (!supabase) return <SetupPending />
+  if (!apiReady) return <SetupPending />
   return <RouterProvider router={router} />
 }
 

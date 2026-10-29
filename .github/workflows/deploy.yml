@@ -43,10 +43,10 @@ jobs:
       - run: npm test
       - name: Build
         env:
+          # The backend's public address, e.g. https://vaksin.imotion.my (no secret here).
           # Set under repo Settings > Secrets and variables > Actions > Variables.
-          # Without them the site shows "System is being set up".
-          VITE_SUPABASE_URL: ${{ vars.VITE_SUPABASE_URL }}
-          VITE_SUPABASE_ANON_KEY: ${{ vars.VITE_SUPABASE_ANON_KEY }}
+          # Without it the site shows "System is being set up".
+          VITE_API_URL: ${{ vars.VITE_API_URL }}
         run: npm run build
       - uses: actions/upload-pages-artifact@v3
         with:

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState, type FormEvent } from 'react'
 import { Link, useParams } from 'react-router'
-import { db } from '../lib/supabase'
+import { db } from '../lib/api'
 import { useI18n } from '../lib/i18n'
 import { displayMyPhone, normalizeMyPhone } from '../lib/phone'
 import { formatDate } from '../lib/time'

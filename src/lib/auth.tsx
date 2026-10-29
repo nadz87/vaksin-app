@@ -1,6 +1,6 @@
-import { createContext, useCallback, useContext, useEffect, useState, type ReactNode } from 'react'
-import type { Session } from '@supabase/supabase-js'
-import { supabase } from './supabase'
+import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react'
+import { db } from './api'
+import { getSession, onChange, signOut as endSession, type StoredSession } from './auth-client'
 
 export type Role = 'parent' | 'officer' | 'platform_admin'
 export type Profile = {
@@ -15,6 +15,7 @@ export type Profile = {
   city: string | null
   state: string | null
 }
+export type Session = { user: { id: string; email: string } }
 
 type Auth = {
   loading: boolean
@@ -22,6 +23,8 @@ type Auth = {
   profile: Profile | null
   /** 'aal2' once an officer/admin has passed 2-step verification. */
   aal: 'aal1' | 'aal2' | null
+  /** Staff signed in with a temporary password and must choose a new one first. */
+  mustChangePassword: boolean
   refresh: () => Promise<void>
   signOut: () => Promise<void>
 }
@@ -29,53 +32,50 @@ type Auth = {
 const AuthContext = createContext<Auth | null>(null)
 
 export function AuthProvider({ children }: { children: ReactNode }) {
-  const [loading, setLoading] = useState(true)
-  const [session, setSession] = useState<Session | null>(null)
+  const [stored, setStored] = useState<StoredSession | null>(getSession)
   const [profile, setProfile] = useState<Profile | null>(null)
-  const [aal, setAal] = useState<Auth['aal']>(null)
+  const [loading, setLoading] = useState(true)
 
-  const load = useCallback(async (s: Session | null) => {
-    setSession(s)
-    if (!supabase || !s) {
+  useEffect(() => onChange(setStored), [])
+
+  const userId = stored?.user.id ?? null
+  const load = useCallback(async () => {
+    if (!userId) {
       setProfile(null)
-      setAal(null)
       setLoading(false)
       return
     }
-    const [{ data: p }, { data: level }] = await Promise.all([
-      supabase.from('profiles').select('user_id, role, full_name, phone, email, address_line1, address_line2, postcode, city, state').eq('user_id', s.user.id).single(),
-      supabase.auth.mfa.getAuthenticatorAssuranceLevel(),
-    ])
-    setProfile((p as Profile) ?? null)
-    setAal((level?.currentLevel as Auth['aal']) ?? 'aal1')
+    const { data } = await db()
+      .from('profiles')
+      .select('user_id, role, full_name, phone, email, address_line1, address_line2, postcode, city, state')
+      .eq('user_id', userId)
+      .maybeSingle()
+    setProfile((data as Profile | null) ?? null)
     setLoading(false)
-  }, [])
+  }, [userId])
 
   useEffect(() => {
-    if (!supabase) {
-      setLoading(false)
-      return
-    }
-    supabase.auth.getSession().then(({ data }) => load(data.session))
-    const { data: sub } = supabase.auth.onAuthStateChange((_event, s) => {
-      // Defer: calling Supabase inside this callback can deadlock the client.
-      setTimeout(() => load(s), 0)
-    })
-    return () => sub.subscription.unsubscribe()
+    setLoading(true)
+    load()
   }, [load])
 
-  const refresh = useCallback(async () => {
-    if (!supabase) return
-    const { data } = await supabase.auth.getSession()
-    await load(data.session)
-  }, [load])
+  const signOut = useCallback(() => endSession(), [])
 
-  const signOut = useCallback(async () => {
-    await supabase?.auth.signOut()
-  }, [])
-
+  // Stable object: pages use the session in effect dependencies.
+  const email = stored?.user.email ?? null
+  const session = useMemo(() => (userId && email ? { user: { id: userId, email } } : null), [userId, email])
   return (
-    <AuthContext.Provider value={{ loading, session, profile, aal, refresh, signOut }}>
+    <AuthContext.Provider
+      value={{
+        loading,
+        session,
+        profile,
+        aal: stored?.aal ?? null,
+        mustChangePassword: stored?.must_change_password ?? false,
+        refresh: load,
+        signOut,
+      }}
+    >
       {children}
     </AuthContext.Provider>
   )
