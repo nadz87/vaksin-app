@@ -1,11 +1,19 @@
-// End-to-end checks of the local gateway + PostgREST: anonymous access, signed and forged
-// tokens, 2FA rule, CORS. Needs `npm run api:up` first. Usage: npm run api:check
-import { createHmac } from 'node:crypto'
+// End-to-end checks of the local stack through the gateway: anonymous access, signed and
+// forged tokens, 2FA rule, CORS, and real parent and officer sign-ins.
+// Needs `npm run api:up` first. Usage: npm run api:check
+import { execFileSync } from 'node:child_process'
+import { createHmac, randomBytes } from 'node:crypto'
 import { readFileSync } from 'node:fs'
+import { createRequire } from 'node:module'
+
+const OTPAuth = createRequire(new URL('auth/package.json', import.meta.url))('otpauth')
 
 const envFile = new URL('.env.dev', import.meta.url)
 const env = Object.fromEntries(readFileSync(envFile, 'utf8').split(/\r?\n/).filter((l) => /^[A-Z_]+=/.test(l)).map((l) => [l.slice(0, l.indexOf('=')), l.slice(l.indexOf('=') + 1)]))
 const API = 'http://127.0.0.1:4011'
+const psql = (sql) => execFileSync('docker', ['exec', 'vaksin-dev-db-1', 'psql', '-U', 'postgres', '-d', 'vaksin', '-Atc', sql], { encoding: 'utf8' }).trim()
+// Database clock, not this PC's: Docker's clock can differ by a few seconds.
+const startedAt = psql('select now()')
 const OFFICER = '00000000-0000-0000-0000-00000000aaaa'
 
 const b64 = (o) => Buffer.from(JSON.stringify(o)).toString('base64url')
@@ -19,8 +27,15 @@ async function call(path, { token, method = 'GET', body, origin } = {}) {
   const headers = { 'Content-Type': 'application/json' }
   if (token) headers.Authorization = `Bearer ${token}`
   if (origin) headers.Origin = origin
-  const res = await fetch(API + path, { method, headers, body: body ? JSON.stringify(body) : undefined })
-  const text = await res.text()
+  let res, text
+  // The gateway's flood limit answers with nginx's own 429 page (not JSON) when checks run
+  // back to back. Wait and retry; the sign-in service's JSON 429s are real results.
+  for (let attempt = 0; ; attempt++) {
+    res = await fetch(API + path, { method, headers, body: body ? JSON.stringify(body) : undefined })
+    text = await res.text()
+    if (res.status !== 429 || text.startsWith('{') || attempt === 10) break
+    await new Promise((r) => setTimeout(r, 600))
+  }
   let json
   try { json = JSON.parse(text) } catch { json = text }
   return { status: res.status, json, cors: res.headers.get('access-control-allow-origin') }
@@ -66,8 +81,60 @@ const allowed = await call('/rest/rpc/list_schools', { method: 'POST', body: {},
 check('CORS: website origin allowed', allowed.cors === 'http://localhost:5173', allowed.cors)
 const evil = await call('/rest/rpc/list_schools', { method: 'POST', body: {}, origin: 'https://evil.example' })
 check('CORS: other origin gets no allow header', !evil.cors, evil.cors)
-const auth = await call('/auth/health')
-check('/auth/ answers 503 until Phase B', auth.status === 503, auth)
+const health = await call('/auth/health')
+check('sign-in service is up behind the gateway', health.status === 200, health)
+
+// Real sign-in, end to end: gateway -> sign-in service -> email (Mailpit) -> token -> PostgREST.
+async function codeFromInbox(email) {
+  for (let i = 0; i < 20; i++) {
+    const found = await (await fetch(`http://127.0.0.1:8025/api/v1/search?query=${encodeURIComponent(`to:${email}`)}`)).json()
+    if (found.messages?.length) {
+      const message = await (await fetch(`http://127.0.0.1:8025/api/v1/message/${found.messages[0].ID}`)).json()
+      return message.Text.match(/\b(\d{6})\b/)?.[1]
+    }
+    await new Promise((r) => setTimeout(r, 250))
+  }
+}
+const parentEmail = `check.${Date.now()}@test.local`
+await call('/auth/email/start', { method: 'POST', body: { email: parentEmail } })
+const signedIn = await call('/auth/email/verify', { method: 'POST', body: { email: parentEmail, code: await codeFromInbox(parentEmail) } })
+check('parent signs in with the emailed code', signedIn.status === 200 && signedIn.json.aal === 'aal1', signedIn)
+const own = await call(`/rest/profiles?select=email,role`, { token: signedIn.json.access_token })
+check('PostgREST accepts the real token: parent sees only own profile',
+  own.status === 200 && own.json.length === 1 && own.json[0].email === parentEmail && own.json[0].role === 'parent', own)
+const spoofEmail = `spoof.${Date.now()}@test.local`
+const spoofed = await fetch(`${API}/auth/email/start`, {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json', 'X-Real-IP': '203.0.113.9' },
+  body: JSON.stringify({ email: spoofEmail }),
+})
+const spoofCount = psql(`select count(*) from auth_private.rate_events where key = 'start:ip:203.0.113.9'`)
+check('a caller cannot fake its address (X-Real-IP is overwritten by the gateway)', spoofed.status === 200 && spoofCount === '0', { status: spoofed.status, spoofCount })
+await call('/auth/logout', { method: 'POST', token: signedIn.json.access_token })
+const after = await call('/auth/refresh', { method: 'POST', body: { refresh_token: signedIn.json.refresh_token } })
+check('after sign-out the refresh token is dead', after.status === 401, after)
+
+// Staff, end to end: account from the server CLI, temporary password, change it, set up the
+// authenticator app, and the aal2 token works with PostgREST. The password never gets printed.
+const staffEmail = `officer.${Date.now()}@test.local`
+const cliOut = execFileSync('docker', ['exec', 'vaksin-dev-auth-1', 'node', 'src/cli.ts', 'create-staff', '--email', staffEmail, '--role', 'officer'], { encoding: 'utf8' })
+const temporary = cliOut.match(/Temporary password[^:]*: (\S+)/)?.[1]
+check('CLI creates an officer with a temporary password', Boolean(temporary), cliOut.replace(/: \S+$/m, ': <hidden>'))
+const staffIn = await call('/auth/password', { method: 'POST', body: { email: staffEmail, password: temporary } })
+check('officer signs in and is told to change the password', staffIn.status === 200 && staffIn.json.must_change_password === true, staffIn.status)
+const newPassword = randomBytes(12).toString('base64url')
+const changed = await call('/auth/password/change', { method: 'POST', token: staffIn.json.access_token, body: { old_password: temporary, new_password: newPassword } })
+check('officer changes the password', changed.status === 200, changed)
+const enrol = await call('/auth/mfa/enroll', { method: 'POST', token: staffIn.json.access_token })
+const totp = new OTPAuth.TOTP({ secret: OTPAuth.Secret.fromBase32(enrol.json.secret ?? 'AAAA') })
+const twoStep = await call('/auth/mfa/verify', { method: 'POST', token: staffIn.json.access_token, body: { code: totp.generate() } })
+check('authenticator code raises the session to aal2', twoStep.status === 200 && twoStep.json.aal === 'aal2', twoStep.json)
+const staffProfile = await call('/rest/profiles?select=role', { token: twoStep.json.access_token })
+check('PostgREST accepts the aal2 token: officer profile', staffProfile.status === 200 && staffProfile.json[0]?.role === 'officer', staffProfile)
+// Leave the dev database as it was: test accounts and this run's rate-limit counters go,
+// so running the checks many times an hour never trips the 20-codes-an-hour limit.
+psql(`delete from auth.users where email in ('${parentEmail}', '${spoofEmail}', '${staffEmail}');
+      delete from auth_private.rate_events where created_at >= '${startedAt}'`)
 
 console.log(failed ? `${failed} check(s) failed` : 'all checks passed')
 process.exit(failed ? 1 : 0)

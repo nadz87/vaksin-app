@@ -12,7 +12,12 @@ await admin.query('drop database if exists vaksin_test with (force)')
 await admin.query('create database vaksin_test')
 await admin.end()
 
-await migrate({ url: dbUrl(env, 'vaksin_test'), authenticatorPassword: env.AUTHENTICATOR_PASSWORD, log: () => {} })
+await migrate({
+  url: dbUrl(env, 'vaksin_test'),
+  authenticatorPassword: env.AUTHENTICATOR_PASSWORD,
+  authDbPassword: env.AUTH_DB_PASSWORD,
+  log: () => {},
+})
 try {
   compose('exec', '-T', 'db', 'pg_prove', '-U', 'postgres', '-d', 'vaksin_test', '--ext', '.sql', '-r', '/tests')
 } catch {

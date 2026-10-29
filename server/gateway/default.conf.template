@@ -1,7 +1,12 @@
-# Vaksin App gateway. The nginx image fills in ${CORS_ORIGIN} at start-up.
+# Vaksin App gateway. The nginx image fills in ${CORS_ORIGIN} and ${CLIENT_IP} at start-up.
 #   /rest/  -> PostgREST (database API)
-#   /auth/  -> sign-in service (Phase B; 503 until then)
+#   /auth/  -> sign-in service
 #   anything else -> 404
+
+# Sign-in requests per client address: a burst of 10, then 2 a second. The service has its
+# own per-email limits on top; this only stops floods before they reach it.
+limit_req_zone ${CLIENT_IP} zone=auth:10m rate=2r/s;
+limit_req_status 429;
 
 # Only the website's own address may call the API from a browser.
 map $http_origin $cors_origin {
@@ -34,8 +39,12 @@ server {
   }
 
   location /auth/ {
-    default_type application/json;
-    return 503 '{"error":"auth_not_ready"}';
+    limit_req zone=auth burst=10 nodelay;
+    proxy_pass http://auth:8080/;
+    proxy_set_header Host $host;
+    # Overwritten here, so a caller cannot pretend to be another address.
+    proxy_set_header X-Real-IP ${CLIENT_IP};
+    proxy_hide_header Access-Control-Allow-Origin;
   }
 
   location / {

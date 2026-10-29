@@ -37,12 +37,38 @@ services:
       PGRST_DB_MAX_ROWS: "1000"
       PGRST_OPENAPI_MODE: disabled
 
+  auth:
+    build: ./auth
+    image: vaksin-auth:dev
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://vaksin_auth:${AUTH_DB_PASSWORD}@db:5432/vaksin
+      JWT_SECRET: ${JWT_SECRET}
+      OTP_PEPPER: ${OTP_PEPPER}
+      TOTP_ENC_KEY: ${TOTP_ENC_KEY}
+      # Local test inbox: every email lands in Mailpit (http://127.0.0.1:8025), none go out.
+      SMTP_HOST: mailpit
+      SMTP_PORT: "1025"
+      SMTP_REQUIRE_TLS: "0"
+      MAIL_FROM: Vaksin App <no-reply@imotion.my>
+
+  mailpit:
+    image: axllent/mailpit:v1.31.3
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8025:8025"
+
   gateway:
     image: nginx:1.29.3-alpine
     restart: unless-stopped
-    depends_on: [rest]
+    depends_on: [rest, auth]
     environment:
       CORS_ORIGIN: http://localhost:5173
+      # Locally the caller's address is the client; behind Cloudflare it is CF-Connecting-IP.
+      CLIENT_IP: $$remote_addr
     ports:
       - "127.0.0.1:4011:8080"
     volumes:

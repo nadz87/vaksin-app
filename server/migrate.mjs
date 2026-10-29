@@ -1,13 +1,14 @@
 // Applies the database setup to a plain Postgres server (no Supabase):
 //   1. server/platform.sql   (roles, auth schema, auth.uid(): what Supabase used to provide)
 //   2. supabase/migrations/*.sql in name order
-//   3. supabase/seed.sql      only with --seed (demo data, local development only)
+//   3. server/auth-schema.sql (sign-in service tables and role; needs public.profiles)
+//   4. supabase/seed.sql      only with --seed (demo data, local development only)
 // Each file runs in its own transaction and is recorded in migrations.applied with a
 // checksum, so running it again only applies new files. An applied file that was edited
 // later stops the run (set ALLOW_CHANGED_MIGRATIONS=1 locally to only warn).
 //
 // Usage: DATABASE_URL=postgres://postgres:...@127.0.0.1:55432/vaksin \
-//        AUTHENTICATOR_PASSWORD=... node server/migrate.mjs [--seed]
+//        AUTHENTICATOR_PASSWORD=... AUTH_DB_PASSWORD=... node server/migrate.mjs [--seed]
 import { createHash } from 'node:crypto'
 import { readFileSync, readdirSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
@@ -31,8 +32,9 @@ function onChangedMigration(name, applied, current) {
   throw new Error(`${detail} Put the change in a new migration file instead.`)
 }
 
+// Line endings are ignored: a Windows checkout (CRLF) is the same file as the LF original.
 function checksum(sql) {
-  return createHash('sha256').update(sql).digest('hex').slice(0, 16)
+  return createHash('sha256').update(sql.replace(/\r\n/g, '\n')).digest('hex').slice(0, 16)
 }
 
 async function applyFile(client, name, sql, done) {
@@ -53,8 +55,15 @@ async function applyFile(client, name, sql, done) {
   return true
 }
 
-export async function migrate({ url, authenticatorPassword, seed = false, log = console.log }) {
+// format(%L) quotes the password safely; utility statements cannot take $1 parameters.
+async function setPassword(client, role, password) {
+  const { rows } = await client.query("select format('alter role %I password %L', $1::text, $2::text) as sql", [role, password])
+  await client.query(rows[0].sql)
+}
+
+export async function migrate({ url, authenticatorPassword, authDbPassword, seed = false, log = console.log }) {
   if (!authenticatorPassword) throw new Error('AUTHENTICATOR_PASSWORD is required')
+  if (!authDbPassword) throw new Error('AUTH_DB_PASSWORD is required')
 
   // The bookkeeping table lives outside `public`, so PostgREST never exposes it.
   let client = new pg.Client({ connectionString: url })
@@ -66,9 +75,7 @@ export async function migrate({ url, authenticatorPassword, seed = false, log = 
 
   const platform = readFileSync(`${root}server/platform.sql`, 'utf8')
   if (await applyFile(client, 'platform.sql', platform, done)) log('applied platform.sql')
-  // format(%L) quotes the password safely; utility statements cannot take $1 parameters.
-  const { rows } = await client.query("select format('alter role authenticator password %L', $1::text) as sql", [authenticatorPassword])
-  await client.query(rows[0].sql)
+  await setPassword(client, 'authenticator', authenticatorPassword)
 
   // Reconnect so the search path platform.sql set on the database is in effect.
   await client.end()
@@ -82,6 +89,10 @@ export async function migrate({ url, authenticatorPassword, seed = false, log = 
         count++
       }
     }
+    if (await applyFile(client, 'auth-schema.sql', readFileSync(`${root}server/auth-schema.sql`, 'utf8'), done)) {
+      log('applied auth-schema.sql')
+    }
+    await setPassword(client, 'vaksin_auth', authDbPassword)
     if (seed && (await applyFile(client, 'seed.sql', readFileSync(`${root}supabase/seed.sql`, 'utf8'), done))) {
       log('applied seed.sql')
     }
@@ -99,7 +110,11 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
     console.error('DATABASE_URL is required')
     process.exit(1)
   }
-  migrate({ url, authenticatorPassword: process.env.AUTHENTICATOR_PASSWORD, seed: process.argv.includes('--seed') }).catch(
+  migrate({
+    url,
+    authenticatorPassword: process.env.AUTHENTICATOR_PASSWORD,
+    authDbPassword: process.env.AUTH_DB_PASSWORD,
+    seed: process.argv.includes('--seed') }).catch(
     (error) => {
       console.error(error.message)
       process.exit(1)

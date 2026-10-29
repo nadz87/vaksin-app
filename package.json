@@ -14,7 +14,8 @@
     "api:up": "node server/dev.mjs up",
     "api:down": "node server/dev.mjs down",
     "api:db-test": "node server/db-test.mjs",
-    "api:check": "node server/api-check.mjs"
+    "api:check": "node server/api-check.mjs",
+    "api:auth-test": "npm --prefix server/auth test"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.118.0",
