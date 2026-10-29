@@ -140,7 +140,7 @@ export function OfficerHome() {
   useEffect(() => {
     db()
       .from('schools')
-      .select('id, name, weekend_days')
+      .select('id, name, weekend_days, slug')
       .order('name')
       .then(({ data }) => setSchools((data as CalSchool[]) ?? []))
   }, [reloads])

@@ -194,15 +194,19 @@ const statusTone = {
 /** Calendar: pick a day, see every child booked that day with the appointment type and time. */
 export function DayCalendar({
   school,
+  schools,
   initialDay,
   onSwitchSchool,
 }: {
   school: CalSchool
+  schools: CalSchool[]
   initialDay?: string
   onSwitchSchool: (schoolId: string, day: string) => void
 }) {
   const { t, lang } = useI18n()
   const [day, setDay] = useState(initialDay ?? todayKey())
+  // The venue whose "share with parents" panel is open.
+  const [sharing, setSharing] = useState<string | null>(null)
   const start = weekStart(day)
   const [slots, setSlots] = useState<OSlot[] | null>(null)
   const [venues, setVenues] = useState<Venue[]>([])
@@ -295,10 +299,27 @@ export function DayCalendar({
               <p className="text-sm text-muted">
                 {formatTime(v.first_start, lang)} – {formatTime(v.last_end, lang)} · {t('dc.venueStats').replace('{s}', String(v.slots)).replace('{b}', String(v.booked))}
               </p>
-              {v.school_id !== school.id && (
-                <button className="mt-1 text-sm font-semibold text-primary" onClick={() => onSwitchSchool(v.school_id, day)}>
-                  {t('dc.switch')}
-                </button>
+              <div className="mt-1 flex flex-wrap gap-x-4 gap-y-1">
+                {v.school_id !== school.id && (
+                  <button className="text-sm font-semibold text-primary" onClick={() => onSwitchSchool(v.school_id, day)}>
+                    {t('dc.switch')}
+                  </button>
+                )}
+                {schools.some((s) => s.id === v.school_id) && (
+                  <button
+                    className="inline-flex items-center gap-1 text-sm font-semibold text-primary"
+                    aria-expanded={sharing === v.school_id}
+                    onClick={() => setSharing((x) => (x === v.school_id ? null : v.school_id))}
+                  >
+                    <Icon name="message" className="h-4 w-4" />
+                    {t('share.title')}
+                  </button>
+                )}
+              </div>
+              {sharing === v.school_id && (
+                <div className="mt-3 border-t border-line pt-3">
+                  <ShareWithParents bare school={schools.find((s) => s.id === v.school_id)!} day={day} />
+                </div>
               )}
             </div>
           </div>
@@ -387,7 +408,7 @@ export function CalendarScreen({
           </button>
         ))}
       </div>
-      {view === 'list' ? <DayCalendar school={school} initialDay={initialDay} onSwitchSchool={onSwitchSchool} /> : <SlotCalendar school={school} schools={schools} onSwitchSchool={onSwitchSchool} />}
+      {view === 'list' ? <DayCalendar school={school} schools={schools} initialDay={initialDay} onSwitchSchool={onSwitchSchool} /> : <SlotCalendar school={school} schools={schools} onSwitchSchool={onSwitchSchool} />}
     </div>
   )
 }
@@ -413,6 +434,8 @@ export function SlotCalendar({
   const [message, setMessage] = useState<string | null>(null)
   // Set when slots were added at a different school than the one being viewed.
   const [movedTo, setMovedTo] = useState<string | null>(null)
+  // After slots are added: the school they are at, for the "share with parents" card.
+  const [shareFor, setShareFor] = useState<CalSchool | null>(null)
 
   const all = monthDays(month, '0000-01-01')
   const days = monthDays(month, todayKey())
@@ -502,6 +525,7 @@ export function SlotCalendar({
                 setDay(k)
                 setPicked([])
                 setMessage(null)
+                setShareFor(null)
                 setError(null)
               }}
               aria-pressed={selected}
@@ -581,6 +605,8 @@ export function SlotCalendar({
             <ErrorText code={error} />
           </section>
 
+          {shareFor && <ShareWithParents school={shareFor} day={day} />}
+
           <AddSlots
             key={day}
             school={school}
@@ -589,6 +615,7 @@ export function SlotCalendar({
             onAdded={(n, venue) => {
               const elsewhere = venue.id !== school.id
               setMovedTo(n > 0 && elsewhere ? venue.id : null)
+              setShareFor(n > 0 ? venue : null)
               setMessage(
                 n === 0
                   ? t('sl.addedNone')
@@ -607,6 +634,59 @@ export function SlotCalendar({
         </>
       )}
     </div>
+  )
+}
+
+/**
+ * After new slots: the parent link for that school with a ready message, to copy or send
+ * (WhatsApp, or the phone's own share sheet). Parents sign in and pick a time themselves.
+ */
+function ShareWithParents({ school, day, bare = false }: { school: CalSchool; day: string; bare?: boolean }) {
+  const { t, lang } = useI18n()
+  const [copied, setCopied] = useState<'message' | 'link' | null>(null)
+  const link = `${location.origin}${import.meta.env.BASE_URL}#/s/${school.slug}`
+  const message = t('share.message')
+    .replace('{s}', school.name)
+    .replace('{d}', formatDate(`${day}T04:00:00Z`, lang))
+    .replace('{l}', link)
+
+  async function copy(what: 'message' | 'link') {
+    try {
+      await navigator.clipboard.writeText(what === 'message' ? message : link)
+      setCopied(what)
+    } catch {
+      window.prompt(t('share.copyManual'), what === 'message' ? message : link)
+    }
+  }
+
+  // `bare`: inside another card (the Lokasi card), which already shows the title.
+  return (
+    <section className={bare ? 'space-y-3' : 'card space-y-3'}>
+      {!bare && (
+        <h3 className="flex items-center gap-2 text-lg font-bold">
+          <Icon name="message" className="h-5 w-5 text-primary" />
+          {t('share.title')}
+        </h3>
+      )}
+      <p className="text-sm text-muted">{t('share.body')}</p>
+      <p className="whitespace-pre-line break-words rounded-2xl bg-page p-3 text-sm text-ink">{message}</p>
+      <div className="grid gap-2 sm:grid-cols-3">
+        <button type="button" className="btn-primary" onClick={() => copy('message')}>
+          {copied === 'message' ? t('share.copied') : t('share.copy')}
+        </button>
+        <a className="btn-ghost text-center" href={`https://wa.me/?text=${encodeURIComponent(message)}`} target="_blank" rel="noreferrer">
+          {t('share.whatsapp')}
+        </a>
+        {typeof navigator.share === 'function' && (
+          <button type="button" className="btn-ghost" onClick={() => navigator.share({ title: 'Vaksin App', text: message }).catch(() => {})}>
+            {t('share.more')}
+          </button>
+        )}
+      </div>
+      <button type="button" className="text-sm font-semibold text-primary" onClick={() => copy('link')}>
+        {copied === 'link' ? t('share.copied') : t('share.copyLink')}
+      </button>
+    </section>
   )
 }
 

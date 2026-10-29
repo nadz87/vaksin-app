@@ -5,7 +5,7 @@ import { useI18n } from '../lib/i18n'
 import { addDays, isoWeekday, shortDate, todayKey, weekdayName } from '../lib/time'
 import { ErrorText, Loading } from '../components/Layout'
 
-export type CalSchool = { id: string; name: string; weekend_days: number[] }
+export type CalSchool = { id: string; name: string; weekend_days: number[]; slug: string }
 
 type Rule = {
   id: string

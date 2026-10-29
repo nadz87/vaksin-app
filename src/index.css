@@ -39,8 +39,22 @@
 }
 
 @utility field {
-  @apply block w-full rounded-[var(--radius-field)] border border-line bg-surface px-4 py-3 text-base
+  @apply block w-full min-w-0 rounded-[var(--radius-field)] border border-line bg-surface px-4 py-3 text-base
     outline-none transition focus:border-primary focus:ring-4 focus:ring-primary/15;
+}
+
+/* iPhone Safari gives date and time boxes their own minimum width and ignores w-full,
+   so they stuck out of the card. Plain appearance makes them fit like other fields. */
+input[type='date'].field,
+input[type='time'].field {
+  -webkit-appearance: none;
+  appearance: none;
+  min-height: 3.25rem;
+  text-align: left;
+}
+input[type='date'].field::-webkit-date-and-time-value,
+input[type='time'].field::-webkit-date-and-time-value {
+  text-align: left;
 }
 
 @utility label {
