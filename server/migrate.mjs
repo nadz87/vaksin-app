@@ -91,7 +91,7 @@ export async function migrate({ url, authenticatorPassword, authDbPassword, seed
     }
     // Sign-in service files: they need public.profiles, so they come after the migrations.
     // Add new ones at the end of this list; never edit one that production already has.
-    for (const name of ['auth-schema.sql', 'auth-officers.sql']) {
+    for (const name of ['auth-schema.sql', 'auth-officers.sql', 'auth-notify.sql']) {
       if (await applyFile(client, name, readFileSync(`${root}server/${name}`, 'utf8'), done)) log(`applied ${name}`)
     }
     await setPassword(client, 'vaksin_auth', authDbPassword)

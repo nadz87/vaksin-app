@@ -8,6 +8,8 @@ import { dbUrl, devEnv } from '../../dev.mjs'
 import { migrate } from '../../migrate.mjs'
 import { LIMITS, createApp } from '../src/app.ts'
 import { loadConfig } from '../src/config.ts'
+import { cancelEmail, type CancelNotice, type Mailer } from '../src/mail.ts'
+import { drainOutbox } from '../src/outbox.ts'
 
 const env = devEnv()
 const DB = 'vaksin_authtest'
@@ -42,6 +44,7 @@ beforeAll(async () => {
     mailer: {
       sendCode: async (to, code) => void outbox.push({ to, code }),
       sendInvite: async (to, link) => void invites.push({ to, link }),
+      sendCancelled: async () => {},
     },
   })
 }, 60_000)
@@ -297,3 +300,53 @@ describe('officer invitations', () => {
 })
 
 const admin_query = (sql: string, params: unknown[]) => admin.query(sql, params)
+
+describe('parent emails queued by the database', () => {
+  const notice: CancelNotice = {
+    child: 'Aisyah <b>',
+    type_ms: 'Suntikan HPV',
+    type_en: 'HPV injection',
+    starts_at: '2026-11-05T01:30:00Z',
+    location: 'Klinik Kesihatan Putrajaya P18',
+    reason: 'Lokasi ditutup',
+  }
+
+  it('says what was cancelled, in Malaysia time, with names escaped in HTML', () => {
+    const email = cancelEmail(notice, 'https://site.test/vaksin-app/#/book')
+    expect(email.text).toContain('Temujanji Suntikan HPV untuk Aisyah <b> pada Khamis, 5 November 2026, 9:30 PG di Klinik Kesihatan Putrajaya P18')
+    expect(email.text).toContain('Thursday, 5 November 2026, 9:30 AM')
+    expect(email.text).toContain('Sebab: Lokasi ditutup')
+    expect(email.html).toContain('Aisyah &lt;b&gt;')
+    expect(email.html).not.toContain('Aisyah <b>')
+  })
+
+  async function queue(to: string) {
+    const { rows } = await admin.query<{ id: string }>(
+      `insert into notify.email_outbox (kind, to_email, payload) values ('appointment_cancelled', $1, $2) returning id`,
+      [to, notice],
+    )
+    return rows[0].id
+  }
+  const rowOf = async (id: string) =>
+    (await admin.query('select sent_at, attempts, last_error from notify.email_outbox where id = $1', [id])).rows[0]
+
+  it('sends a queued email once and marks it sent (as the restricted vaksin_auth role)', async () => {
+    const sent: string[] = []
+    const mailer = { sendCancelled: async (to: string, _n: CancelNotice, link: string) => void sent.push(`${to} ${link}`) } as unknown as Mailer
+    const id = await queue('mum@test.local')
+    expect(await drainOutbox(db, mailer, config.siteUrl)).toBe(1)
+    expect(sent).toEqual(['mum@test.local https://site.test/vaksin-app/#/book'])
+    expect((await rowOf(id)).sent_at).not.toBeNull()
+    expect(await drainOutbox(db, mailer, config.siteUrl)).toBe(0)
+  })
+
+  it('keeps a failing email queued with its error, and gives up after 5 tries', async () => {
+    const mailer = { sendCancelled: async () => { throw new Error('SMTP down') } } as unknown as Mailer
+    const id = await queue('dad@test.local')
+    for (let i = 0; i < 6; i++) await drainOutbox(db, mailer, config.siteUrl)
+    const row = await rowOf(id)
+    expect(row.sent_at).toBeNull()
+    expect(row.attempts).toBe(5)
+    expect(row.last_error).toBe('SMTP down')
+  })
+})

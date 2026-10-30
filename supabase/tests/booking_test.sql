@@ -27,7 +27,7 @@ insert into public.student_guardians (student_id, guardian_id) values
   ('30000000-0000-0000-0000-00000000000b', '00000000-0000-0000-0000-0000000000b2');
 
 -- s1: in 3 days, 1 place, any type   s2: in 3 hours (inside 24h cancel cutoff)
--- s3: in 4 days, vaccination only, 10 places
+-- s3: in 4 days, HPV only, 10 places
 insert into public.slots (id, officer_id, location_id, starts_at, ends_at, capacity, appointment_type_id) values
   ('40000000-0000-0000-0000-000000000001', '00000000-0000-0000-0000-0000000000c2', (select id from public.locations where slug = 'kkp18'),
    now() + interval '3 days', now() + interval '3 days 15 minutes', 1, null),
@@ -35,7 +35,11 @@ insert into public.slots (id, officer_id, location_id, starts_at, ends_at, capac
    now() + interval '3 hours', now() + interval '3 hours 15 minutes', 1, null),
   ('40000000-0000-0000-0000-000000000003', '00000000-0000-0000-0000-0000000000c2', (select id from public.locations where slug = 'kkp18'),
    now() + interval '4 days', now() + interval '4 days 30 minutes', 10,
-   (select id from public.appointment_types where code = 'vaccination'));
+   (select id from public.appointment_types where code = 'hpv'));
+
+-- The v1 "Kurang sihat" type is hidden since 2026-10-30; this test type keeps the needs-a-note rule covered.
+insert into public.appointment_types (code, name_ms, name_en, icon, color, needs_reason) values
+  ('unwell_test', 'Kurang sihat (ujian)', 'Unwell (test)', 'thermometer', '#E2557A', true);
 
 create function pg_temp.act_as(p_user uuid) returns void language sql as $$
   select set_config('role', 'authenticated', true),
@@ -53,32 +57,32 @@ select is((select count(*) from public.available_slots('30000000-0000-0000-0000-
 
 select lives_ok(
   format($$ select public.book_slot('40000000-0000-0000-0000-000000000001', '30000000-0000-0000-0000-00000000000a', %L, null) $$,
-         pg_temp.type_id('screening')),
+         pg_temp.type_id('att')),
   'parent A books the last place in s1');
 
 select throws_ok(
   format($$ select public.book_slot('40000000-0000-0000-0000-000000000002', '30000000-0000-0000-0000-00000000000a', %L, null) $$,
-         pg_temp.type_id('screening')),
+         pg_temp.type_id('att')),
   'already_booked_type', 'same child cannot hold two upcoming bookings of one type');
 
 select throws_ok(
   format($$ select public.book_slot('40000000-0000-0000-0000-000000000002', '30000000-0000-0000-0000-00000000000a', %L, '  ') $$,
-         pg_temp.type_id('unwell')),
+         pg_temp.type_id('unwell_test')),
   'reason_required', '"Feeling unwell" needs a note');
 
 select throws_ok(
   format($$ select public.book_slot('40000000-0000-0000-0000-000000000003', '30000000-0000-0000-0000-00000000000a', %L, null) $$,
-         pg_temp.type_id('follow_up')),
+         pg_temp.type_id('dt')),
   'type_mismatch', 'vaccination-only slot rejects other types');
 
 select throws_ok(
   format($$ select public.book_slot('40000000-0000-0000-0000-000000000002', '30000000-0000-0000-0000-00000000000b', %L, null) $$,
-         pg_temp.type_id('screening')),
+         pg_temp.type_id('att')),
   'not_guardian', 'cannot book for someone else''s child');
 
 select lives_ok(
   format($$ select public.book_slot('40000000-0000-0000-0000-000000000002', '30000000-0000-0000-0000-00000000000a', %L, null) $$,
-         pg_temp.type_id('follow_up')),
+         pg_temp.type_id('dt')),
   'parent A books s2 (3 hours away) as follow-up');
 
 select throws_ok(
@@ -95,7 +99,7 @@ select is((select count(*) from public.available_slots('30000000-0000-0000-0000-
 
 select throws_ok(
   format($$ select public.book_slot('40000000-0000-0000-0000-000000000001', '30000000-0000-0000-0000-00000000000b', %L, null) $$,
-         pg_temp.type_id('screening')),
+         pg_temp.type_id('att')),
   'slot_full', 'second parent cannot take a full slot');
 
 -- Parent A cancels s1 (3 days away), then parent B can take it -------------
@@ -107,7 +111,7 @@ select lives_ok(
 select pg_temp.act_as('00000000-0000-0000-0000-0000000000b2');
 select lives_ok(
   format($$ select public.book_slot('40000000-0000-0000-0000-000000000001', '30000000-0000-0000-0000-00000000000b', %L, null) $$,
-         pg_temp.type_id('screening')),
+         pg_temp.type_id('att')),
   'freed place can be booked by parent B');
 
 select * from finish();

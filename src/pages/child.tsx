@@ -215,15 +215,15 @@ export function ChildEdit() {
           </div>
           <label className="block">
             <span className="label">{t('kid.allergies')}</span>
-            <textarea className="field min-h-20" maxLength={500} value={form.allergies} onChange={(e) => set('allergies', e.target.value)} />
+            <textarea className="field min-h-20" maxLength={500} placeholder={t('kid.noneHint')} value={form.allergies} onChange={(e) => set('allergies', e.target.value)} />
           </label>
           <label className="block">
             <span className="label">{t('kid.conditions')}</span>
-            <textarea className="field min-h-20" maxLength={500} value={form.conditions} onChange={(e) => set('conditions', e.target.value)} />
+            <textarea className="field min-h-20" maxLength={500} placeholder={t('kid.noneHint')} value={form.conditions} onChange={(e) => set('conditions', e.target.value)} />
           </label>
           <label className="block">
             <span className="label">{t('kid.medications')}</span>
-            <textarea className="field min-h-20" maxLength={500} value={form.medications} onChange={(e) => set('medications', e.target.value)} />
+            <textarea className="field min-h-20" maxLength={500} placeholder={t('kid.noneHint')} value={form.medications} onChange={(e) => set('medications', e.target.value)} />
           </label>
         </fieldset>
 

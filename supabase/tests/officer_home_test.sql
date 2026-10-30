@@ -35,10 +35,10 @@ insert into public.slots (id, officer_id, location_id, starts_at, ends_at, capac
    now() + interval '2 days', now() + interval '2 days 15 minutes', 1);
 insert into public.appointments (id, slot_id, student_id, type_id, booked_by)
 select 'f1000000-0000-0000-0000-00000000000a', 'e1000000-0000-0000-0000-00000000000a', 'd1000000-0000-0000-0000-00000000000a', t.id,
-       '00000000-0000-0000-0000-0000000000a9' from public.appointment_types t where t.code = 'screening';
+       '00000000-0000-0000-0000-0000000000a9' from public.appointment_types t where t.code = 'att';
 insert into public.appointments (id, slot_id, student_id, type_id, booked_by)
 select 'f1000000-0000-0000-0000-00000000000b', 'e1000000-0000-0000-0000-00000000000b', 'd1000000-0000-0000-0000-00000000000b', t.id,
-       '00000000-0000-0000-0000-0000000000a9' from public.appointment_types t where t.code = 'screening';
+       '00000000-0000-0000-0000-0000000000a9' from public.appointment_types t where t.code = 'att';
 
 create function pg_temp.act_as(p_user uuid, p_aal text default 'aal2') returns void language sql as $$
   select set_config('role', 'authenticated', true),
@@ -80,12 +80,12 @@ select throws_ok(
   'bad_status', 'the officer cannot set a status that is not booked, done or no-show');
 
 -- Adding slots: 09:00-10:00 in 15 minutes, 3 days ahead = 4 slots; again adds nothing
-select is(public.add_slots((select id from public.locations where slug = 'kkp18'), null, (now() at time zone 'Asia/Kuala_Lumpur')::date + 3, '09:00', '10:00', 15, 1), 4,
+select is(public.add_slots((select id from public.locations where slug = 'kkp18'), (select id from public.appointment_types where code = 'hpv'), (now() at time zone 'Asia/Kuala_Lumpur')::date + 3, '09:00', '10:00', 15, 1), 4,
   'adding 09:00-10:00 in 15-minute steps creates 4 slots');
-select is(public.add_slots((select id from public.locations where slug = 'kkp18'), null, (now() at time zone 'Asia/Kuala_Lumpur')::date + 3, '09:00', '10:00', 15, 1), 0,
+select is(public.add_slots((select id from public.locations where slug = 'kkp18'), (select id from public.appointment_types where code = 'hpv'), (now() at time zone 'Asia/Kuala_Lumpur')::date + 3, '09:00', '10:00', 15, 1), 0,
   'adding the same times again creates nothing (no overlap)');
 select throws_ok(
-  $$ select public.add_slots((select id from public.locations where slug = 'kkp18'), null, (now() at time zone 'Asia/Kuala_Lumpur')::date + 3, '10:00', '09:00', 15, 1) $$,
+  $$ select public.add_slots((select id from public.locations where slug = 'kkp18'), (select id from public.appointment_types where code = 'hpv'), (now() at time zone 'Asia/Kuala_Lumpur')::date + 3, '10:00', '09:00', 15, 1) $$,
   'bad_slot', 'an end time before the start time is refused');
 
 -- Removing slots: an unbooked one is deleted, a booked one is blocked and its booking cancelled
@@ -111,7 +111,7 @@ select is((public.officer_dashboard() ->> 'students_total')::int, 0,
 
 select pg_temp.act_as('00000000-0000-0000-0000-0000000000a9');
 select throws_ok(
-  $$ select public.add_slots((select id from public.locations where slug = 'kkp18'), null, (now() at time zone 'Asia/Kuala_Lumpur')::date + 3, '09:00', '10:00', 15, 1) $$,
+  $$ select public.add_slots((select id from public.locations where slug = 'kkp18'), (select id from public.appointment_types where code = 'hpv'), (now() at time zone 'Asia/Kuala_Lumpur')::date + 3, '09:00', '10:00', 15, 1) $$,
   'not_allowed', 'a parent cannot add slots');
 
 select * from finish();

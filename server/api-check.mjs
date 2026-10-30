@@ -139,27 +139,76 @@ const officerIn = await staffSignIn(staffEmail)
 check('the invited officer signs in the same way (aal2)', officerIn.status === 200 && officerIn.json.user?.role === 'officer' && officerIn.json.aal === 'aal2', officerIn.json)
 const clinic = (await call('/rest/locations?select=id,name,slug&slug=eq.kkp18')).json?.[0]
 check('anyone can look up the default clinic location (KK P18)', clinic?.name === 'Klinik Kesihatan Putrajaya P18', clinic)
+const hpv = (await call('/rest/appointment_types?select=id,name_ms&code=eq.hpv')).json?.[0]
+check('parents see the clinic types (Suntikan HPV)', hpv?.name_ms === 'Suntikan HPV', hpv)
 const inThreeDays = new Date(Date.now() + 3 * 86400_000).toLocaleDateString('en-CA', { timeZone: 'Asia/Kuala_Lumpur' })
 const added = await call('/rest/rpc/add_slots', {
   method: 'POST',
   token: officerIn.json.access_token,
-  body: { p_location: clinic?.id, p_type: null, p_date: inThreeDays, p_start: '09:00', p_end: '09:30', p_minutes: 15, p_capacity: 1 },
+  body: { p_location: clinic?.id, p_type: hpv?.id, p_date: inThreeDays, p_start: '09:00', p_end: '09:30', p_minutes: 15, p_capacity: 1 },
 })
 check('officer adds slots at the clinic', added.status === 200 && added.json === 2, added)
 const listed = await call('/rest/rpc/admin_officers', { method: 'POST', token: adminIn.json.access_token, body: {} })
 const mine = Array.isArray(listed.json) ? listed.json.find((o) => o.email === staffEmail) : null
 check('admin sees the officer, registered, running slots at KK P18',
   mine?.registered === true && mine?.locations?.[0]?.name === clinic?.name, listed.json)
+// Removing a location cancels its bookings and emails the parent, end to end:
+// database outbox -> sign-in service (LISTEN) -> SMTP (Mailpit).
+const bookerEmail = `booker.${Date.now()}@test.local`
+const booker = await staffSignIn(bookerEmail)
+const bt = booker.json.access_token
+const mm = String(1 + Math.floor(Math.random() * 12)).padStart(2, '0')
+const dd = String(1 + Math.floor(Math.random() * 28)).padStart(2, '0')
+// Test-only MyKid: born 2014, place code 10, even last digit = female. Random so reruns never collide.
+const testMykid = `14${mm}${dd}10${String(Math.floor(Math.random() * 5000) * 2).padStart(4, '0')}`
+const reg = await call('/rest/rpc/register_child', {
+  method: 'POST',
+  token: bt,
+  body: { p_school_id: schools.json[0].id, p_full_name: 'Anak Semakan', p_mykid: testMykid, p_dob: `2014-${mm}-${dd}`,
+          p_gender: 'female', p_class_name: '5A', p_relationship: 'mother', p_consent: true },
+})
+const childId = (await call('/rest/students?select=id', { token: bt })).json?.[0]?.id
+check('a parent registers a child at any school', reg.status === 200 && !!childId, reg)
+const placeName = `Klinik Semakan ${Date.now()}`
+const place = await call('/rest/rpc/add_location', { method: 'POST', token: officerIn.json.access_token, body: { p_name: placeName, p_address: null } })
+await call('/rest/rpc/add_slots', {
+  method: 'POST',
+  token: officerIn.json.access_token,
+  body: { p_location: place.json?.id, p_type: hpv?.id, p_date: inThreeDays, p_start: '10:00', p_end: '10:15', p_minutes: 15, p_capacity: 1 },
+})
+const open = await call('/rest/rpc/available_slots', { method: 'POST', token: bt, body: { p_student: childId } })
+const slot = Array.isArray(open.json) ? open.json.find((x) => x.location_id === place.json?.id) : null
+const booking = await call('/rest/rpc/book_slot', { method: 'POST', token: bt, body: { p_slot: slot?.id, p_student: childId, p_type: hpv?.id, p_note: null } })
+check('the parent books an HPV slot at the new location', booking.status === 200, booking)
+const removed = await call('/rest/rpc/remove_location', { method: 'POST', token: officerIn.json.access_token, body: { p_location: place.json?.id } })
+check('the officer removes the location: the booking is cancelled', removed.json?.cancelled === 1, removed)
+let cancelMail = null
+for (let i = 0; i < 40 && !cancelMail; i++) {
+  const found = await (await fetch(`http://127.0.0.1:8025/api/v1/search?query=${encodeURIComponent(`to:${bookerEmail} subject:"Temujanji dibatalkan"`)}`)).json()
+  if (found.messages?.length) cancelMail = (await (await fetch(`http://127.0.0.1:8025/api/v1/message/${found.messages[0].ID}`)).json()).Text
+  else await new Promise((r) => setTimeout(r, 250))
+}
+check('the parent gets the cancellation email within seconds, with a link to book again',
+  !!cancelMail && cancelMail.includes('Suntikan HPV untuk Anak Semakan') && cancelMail.includes(placeName) && cancelMail.includes('/vaksin-app/#/book'),
+  cancelMail?.slice(0, 200))
+const kkp18Gone = await call('/rest/rpc/remove_location', { method: 'POST', token: officerIn.json.access_token, body: { p_location: clinic?.id } })
+check('the default clinic cannot be removed', JSON.stringify(kkp18Gone.json).includes('location_default'), kkp18Gone)
+
 const asOfficer = await call('/rest/rpc/admin_officers', { method: 'POST', token: officerIn.json.access_token, body: {} })
 check('an officer cannot see the officer list', asOfficer.status >= 400, asOfficer.status)
 
 // Leave the dev database as it was: test accounts, their audit entries and this run's
 // rate-limit counters go, so running the checks many times an hour never trips a limit.
-const testEmails = [parentEmail, spoofEmail, staffEmail, adminEmail].map((e) => `'${e}'`).join(', ')
-psql(`delete from public.slots where officer_id in (select id from auth.users where email in (${testEmails}));
+const testEmails = [parentEmail, spoofEmail, staffEmail, adminEmail, bookerEmail].map((e) => `'${e}'`).join(', ')
+psql(`delete from public.appointments where booked_by in (select id from auth.users where email in (${testEmails}));
+      delete from public.students where id in (select student_id from public.student_guardians
+         where guardian_id in (select id from auth.users where email in (${testEmails})));
+      delete from notify.email_outbox where to_email in (${testEmails});
+      delete from public.slots where officer_id in (select id from auth.users where email in (${testEmails}));
       delete from public.audit_log where actor_id in (select id from auth.users where email in (${testEmails}))
          or entity_id in (select id from auth.users where email in (${testEmails}));
       delete from auth.users where email in (${testEmails});
+      delete from public.locations where name like 'Klinik Semakan %';
       delete from auth_private.rate_events where created_at >= '${startedAt}'`)
 
 console.log(failed ? `${failed} check(s) failed` : 'all checks passed')

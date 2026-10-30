@@ -5,7 +5,7 @@ import { useI18n } from '../lib/i18n'
 import { addDays, dayKey, formatDate, formatMonth, formatTime, isoWeekday, monthDays, shiftMonth, shortDate, tileLabel, todayKey, weekStart } from '../lib/time'
 import { Icon } from '../components/icons'
 import { ErrorText, Loading } from '../components/Layout'
-import type { Place } from './officer-calendar'
+import type { Place } from '../lib/places'
 
 type Booking = {
   appointment_id: string
@@ -661,10 +661,12 @@ function ShareWithParents({ place, day, bare = false }: { place: { name: string;
 }
 
 const NEW_PLACE = '__new'
+const NEW_TYPE = '__newtype'
 
 /**
- * Tambah slot: the appointment type first, then the location (Klinik Kesihatan Putrajaya P18
- * by default). "+ Tambah lokasi baharu" adds a location on the spot.
+ * Tambah slot: the appointment type first (every slot has one; "+ Cipta jenis temujanji" adds
+ * a type that parents then see), then the location (Klinik Kesihatan Putrajaya P18 by default;
+ * "+ Tambah lokasi baharu" adds one on the spot).
  */
 function AddSlots({
   locations,
@@ -683,6 +685,7 @@ function AddSlots({
   const [placeId, setPlaceId] = useState(() => (locations.find((l) => l.slug === 'kkp18') ?? locations[0])?.id ?? '')
   const [newName, setNewName] = useState('')
   const [newAddress, setNewAddress] = useState('')
+  const [newType, setNewType] = useState('')
   const [start, setStart] = useState('08:00')
   const [end, setEnd] = useState('11:00')
   const [minutes, setMinutes] = useState(15)
@@ -690,14 +693,30 @@ function AddSlots({
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
-  useEffect(() => {
-    db()
-      .from('appointment_types')
-      .select('id, name_ms, name_en')
-      .eq('active', true)
-      .order('sort_order')
-      .then(({ data }) => setTypes((data as ApptType[]) ?? []))
+  const loadTypes = useCallback(async () => {
+    const { data } = await db().from('appointment_types').select('id, name_ms, name_en').eq('active', true).order('sort_order')
+    const list = (data as ApptType[]) ?? []
+    setTypes(list)
+    setTypeId((id) => (id && list.some((x) => x.id === id) ? id : (list[0]?.id ?? '')))
+    return list
   }, [])
+  useEffect(() => {
+    loadTypes()
+  }, [loadTypes])
+
+  async function addType() {
+    setBusy(true)
+    setError(null)
+    const { data, error } = await db().rpc('add_appointment_type', { p_name: newType.trim() })
+    if (error) {
+      setBusy(false)
+      return setError(errorCode(error))
+    }
+    await loadTypes()
+    setTypeId((data as { id: string }).id)
+    setNewType('')
+    setBusy(false)
+  }
 
   async function addPlace() {
     setBusy(true)
@@ -718,11 +737,12 @@ function AddSlots({
     e.preventDefault()
     setError(null)
     if (placeId === NEW_PLACE) return setError('bad_location')
+    if (!typeId || typeId === NEW_TYPE) return setError('bad_type')
     if (end <= start) return setError('bad_time')
     setBusy(true)
     const { data, error } = await db().rpc('add_slots', {
       p_location: placeId,
-      p_type: typeId || null,
+      p_type: typeId,
       p_date: day,
       p_start: start,
       p_end: end,
@@ -740,15 +760,27 @@ function AddSlots({
       <h3 className="text-lg font-bold sm:col-span-2">{t('sl.addTitle')}</h3>
       <label className="block sm:col-span-2">
         <span className="label">{t('sl.type')}</span>
-        <select className="field" value={typeId} onChange={(e) => setTypeId(e.target.value)}>
-          <option value="">{t('cal.anyType')}</option>
+        <select className="field" required value={typeId} onChange={(e) => setTypeId(e.target.value)}>
           {types.map((ty) => (
             <option key={ty.id} value={ty.id}>
               {lang === 'en' ? ty.name_en : ty.name_ms}
             </option>
           ))}
+          <option value={NEW_TYPE}>{t('type.addOption')}</option>
         </select>
       </label>
+      {typeId === NEW_TYPE && (
+        <div className="space-y-3 rounded-2xl bg-page p-3 sm:col-span-2">
+          <label className="block">
+            <span className="label">{t('type.name')}</span>
+            <input className="field" required minLength={3} maxLength={60} placeholder={t('type.namePlaceholder')} value={newType} onChange={(e) => setNewType(e.target.value)} />
+          </label>
+          <p className="text-xs text-muted">{t('type.parentsSee')}</p>
+          <button type="button" className="btn-ghost" disabled={busy || newType.trim().length < 3} onClick={addType}>
+            {t('type.save')}
+          </button>
+        </div>
+      )}
       <label className="block sm:col-span-2">
         <span className="label">{t('sl.venue')}</span>
         <select className="field" value={placeId} onChange={(e) => setPlaceId(e.target.value)}>
@@ -800,7 +832,7 @@ function AddSlots({
       </label>
       <div className="sm:col-span-2">
         <ErrorText code={error} />
-        <button className="btn-primary mt-2" disabled={busy || placeId === NEW_PLACE}>
+        <button className="btn-primary mt-2" disabled={busy || placeId === NEW_PLACE || !typeId || typeId === NEW_TYPE}>
           <Icon name="slots" className="mr-2 h-5 w-5" />
           {t('sl.add')}
         </button>

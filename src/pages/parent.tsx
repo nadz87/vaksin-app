@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState, type FormEvent } from 'react'
+import { useCallback, useEffect, useState, type FormEvent, type ReactNode } from 'react'
 import { Link, Navigate, useNavigate, useParams, useSearchParams } from 'react-router'
 import { db, errorCode } from '../lib/api'
 import { useAuth } from '../lib/auth'
@@ -109,12 +109,11 @@ export function ParentHome() {
       </Link>
 
       {children.length > 0 && (
-        <>
+        <MyAppointments>
           <Link to="/book" className="btn-primary">
             {t('home.book')}
           </Link>
-          <MyAppointments />
-        </>
+        </MyAppointments>
       )}
 
       {children.length > 0 && (
@@ -396,15 +395,21 @@ type MyAppt = {
   student_name: string
   school_name: string
   location_name: string
+  type_id: string
   type_name_ms: string
   type_name_en: string
   can_cancel: boolean
   cancel_reason: string | null
   cancelled_by_officer: boolean
+  child_profile_complete: boolean
 }
 
-/** Upcoming booked appointments, with cancel until 24h before. */
-function MyAppointments() {
+/**
+ * Notices first (appointments the officer cancelled, until the child is booked again for that
+ * type or the time passes), then `children` (the book button), then upcoming bookings with
+ * cancel until 24h before and a reminder while the child's health profile is incomplete.
+ */
+function MyAppointments({ children }: { children: ReactNode }) {
   const { t, lang } = useI18n()
   const [items, setItems] = useState<MyAppt[] | null>(null)
 
@@ -423,26 +428,35 @@ function MyAppointments() {
     load()
   }, [load])
 
-  if (!items) return null
+  if (!items) return <>{children}</>
+
+  const booked = items.filter((a) => a.status === 'booked')
+  const notices = items.filter(
+    (a) => a.status === 'cancelled' && !booked.some((b) => b.student_id === a.student_id && b.type_id === a.type_id),
+  )
 
   return (
-    <section className="space-y-3">
-      <h2 className="text-lg font-bold">{t('mine.title')}</h2>
-      {items.length === 0 && <p className="card text-sm text-muted">{t('mine.none')}</p>}
-      {items.map((a) =>
-        a.status === 'cancelled' ? (
-          <div key={a.id} className="card space-y-2 border border-danger/30">
-            <p className="font-semibold">{lang === 'en' ? a.type_name_en : a.type_name_ms}</p>
-            <p className="text-sm text-muted">
-              {a.student_name} · {formatDate(a.starts_at, lang)}, {formatTime(a.starts_at, lang)}
-            </p>
-            <p className="text-sm font-medium text-danger">{t('mine.cancelledByOfficer')}</p>
-            {a.cancel_reason && <p className="text-sm">{a.cancel_reason}</p>}
-            <Link to="/book" className="btn-ghost">
-              {t('mine.rebook')}
-            </Link>
-          </div>
-        ) : (
+    <>
+      {notices.map((a) => (
+        <section key={a.id} role="status" className="space-y-2 rounded-2xl border border-danger/30 bg-danger/5 p-4">
+          <p className="font-semibold text-danger">{t('mine.cancelledByOfficer')}</p>
+          <p className="text-sm">
+            <span className="font-semibold">{lang === 'en' ? a.type_name_en : a.type_name_ms}</span> · {a.student_name}
+            <br />
+            {formatDate(a.starts_at, lang)}, {formatTime(a.starts_at, lang)} · {a.location_name}
+          </p>
+          {a.cancel_reason && <p className="text-sm text-muted">{a.cancel_reason}</p>}
+          <p className="text-sm">{t('mine.pickNewBody')}</p>
+          <Link to={`/book?child=${a.student_id}`} className="btn-primary">
+            {t('mine.rebook')}
+          </Link>
+        </section>
+      ))}
+      {children}
+      <section className="space-y-3">
+        <h2 className="text-lg font-bold">{t('mine.title')}</h2>
+        {booked.length === 0 && <p className="card text-sm text-muted">{t('mine.none')}</p>}
+        {booked.map((a) => (
         <div key={a.id} className="card space-y-2">
           <div className="flex items-start justify-between gap-3">
             <div>
@@ -459,10 +473,16 @@ function MyAppointments() {
           <p className="text-sm font-medium text-primary">
             {formatDate(a.starts_at, lang)}, {formatTime(a.starts_at, lang)}
           </p>
+          {!a.child_profile_complete && (
+            <Link to={`/children/${a.student_id}`} className="inline-flex items-center gap-1 text-sm font-semibold text-danger">
+              {t('mine.completeProfile')}
+              <span aria-hidden="true">›</span>
+            </Link>
+          )}
         </div>
-        ),
-      )}
-    </section>
+        ))}
+      </section>
+    </>
   )
 }
 
