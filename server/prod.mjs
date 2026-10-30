@@ -21,7 +21,7 @@ const DIR = process.env.VAKSIN_PROD_DIR ?? 'D:\\VPS\\vaksin'
 const ENV_FILE = join(DIR, '.env')
 const BACKUP_DIR = join(DIR, 'backups')
 
-const SECRETS = ['DB_PASSWORD', 'AUTHENTICATOR_PASSWORD', 'AUTH_DB_PASSWORD', 'JWT_SECRET', 'OTP_PEPPER', 'TOTP_ENC_KEY']
+const SECRETS = ['DB_PASSWORD', 'AUTHENTICATOR_PASSWORD', 'AUTH_DB_PASSWORD', 'JWT_SECRET', 'OTP_PEPPER']
 const SETTINGS = `
 # Email for sign-in codes (Brevo SMTP relay). Fill in SMTP_USER (the Brevo login) and
 # SMTP_PASS (an SMTP key from Brevo > SMTP & API). Until then codes cannot be sent.

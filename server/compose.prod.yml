@@ -61,7 +61,6 @@ services:
       DATABASE_URL: postgres://vaksin_auth:${AUTH_DB_PASSWORD:?missing in .env}@db:5432/vaksin
       JWT_SECRET: ${JWT_SECRET}
       OTP_PEPPER: ${OTP_PEPPER:?missing in .env}
-      TOTP_ENC_KEY: ${TOTP_ENC_KEY:?missing in .env}
       SMTP_HOST: ${SMTP_HOST:-smtp-relay.brevo.com}
       SMTP_PORT: ${SMTP_PORT:-587}
       SMTP_USER: ${SMTP_USER:-}

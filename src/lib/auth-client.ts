@@ -104,14 +104,6 @@ export async function inviteOfficer(email: string) {
   return post<{ ok: true; already_registered: boolean }>('/invite', { email }, await accessToken())
 }
 
-export async function enrollMfa() {
-  return post<{ uri: string; secret: string }>('/mfa/enroll', {}, await accessToken())
-}
-
-export async function verifyMfa(code: string): Promise<Result> {
-  return signedIn(await post<TokenReply>('/mfa/verify', { code }, await accessToken()))
-}
-
 export async function signOut(): Promise<void> {
   const token = current?.access_token
   save(null)

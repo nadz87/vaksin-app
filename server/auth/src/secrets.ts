@@ -1,6 +1,6 @@
 // Small crypto helpers. Everything uses Node's built-in crypto; nothing here is hand-made
 // cryptography, only the standard building blocks put together.
-import { createCipheriv, createDecipheriv, createHash, createHmac, randomBytes, randomInt, timingSafeEqual } from 'node:crypto'
+import { createHash, createHmac, randomBytes, randomInt, timingSafeEqual } from 'node:crypto'
 
 /** A 6-digit sign-in code, uniformly random. */
 export function newEmailCode(): string {
@@ -27,18 +27,4 @@ export function sameText(a: string, b: string): boolean {
   const x = Buffer.from(a)
   const y = Buffer.from(b)
   return x.length === y.length && timingSafeEqual(x, y)
-}
-
-// Authenticator-app secrets: AES-256-GCM, stored as iv (12) | tag (16) | ciphertext.
-export function encryptSecret(key: Buffer, plain: string): Buffer {
-  const iv = randomBytes(12)
-  const cipher = createCipheriv('aes-256-gcm', key, iv)
-  const body = Buffer.concat([cipher.update(plain, 'utf8'), cipher.final()])
-  return Buffer.concat([iv, cipher.getAuthTag(), body])
-}
-
-export function decryptSecret(key: Buffer, stored: Buffer): string {
-  const decipher = createDecipheriv('aes-256-gcm', key, stored.subarray(0, 12))
-  decipher.setAuthTag(stored.subarray(12, 28))
-  return Buffer.concat([decipher.update(stored.subarray(28)), decipher.final()]).toString('utf8')
 }

@@ -80,19 +80,19 @@ select throws_ok(
   'bad_status', 'the officer cannot set a status that is not booked, done or no-show');
 
 -- Adding slots: 09:00-10:00 in 15 minutes, 3 days ahead = 4 slots; again adds nothing
-select is(public.add_slots('c1000000-0000-0000-0000-00000000000a', current_date + 3, '09:00', '10:00', 15, 1, null), 4,
+select is(public.add_slots('c1000000-0000-0000-0000-00000000000a', (now() at time zone 'Asia/Kuala_Lumpur')::date + 3, '09:00', '10:00', 15, 1, null), 4,
   'adding 09:00-10:00 in 15-minute steps creates 4 slots');
-select is(public.add_slots('c1000000-0000-0000-0000-00000000000a', current_date + 3, '09:00', '10:00', 15, 1, null), 0,
+select is(public.add_slots('c1000000-0000-0000-0000-00000000000a', (now() at time zone 'Asia/Kuala_Lumpur')::date + 3, '09:00', '10:00', 15, 1, null), 0,
   'adding the same times again creates nothing (no overlap)');
 select throws_ok(
-  $$ select public.add_slots('c1000000-0000-0000-0000-00000000000a', current_date + 3, '10:00', '09:00', 15, 1, null) $$,
+  $$ select public.add_slots('c1000000-0000-0000-0000-00000000000a', (now() at time zone 'Asia/Kuala_Lumpur')::date + 3, '10:00', '09:00', 15, 1, null) $$,
   'bad_slot', 'an end time before the start time is refused');
 
 -- Removing slots: an unbooked one is deleted, a booked one is blocked and its booking cancelled
 select is(
   (public.remove_slots(array[(select id from public.slots where school_id = 'c1000000-0000-0000-0000-00000000000a'
-                              and (starts_at at time zone 'Asia/Kuala_Lumpur')::date = current_date + 3
-                              order by starts_at limit 1)], 'Cuti') ->> 'deleted')::int,
+                              and (starts_at at time zone 'Asia/Kuala_Lumpur')::date = (now() at time zone 'Asia/Kuala_Lumpur')::date + 3
+                              and (starts_at at time zone 'Asia/Kuala_Lumpur')::time = '09:00')], 'Cuti') ->> 'deleted')::int,
   1, 'an unbooked slot is deleted');
 select is(
   (public.remove_slots(array['e1000000-0000-0000-0000-00000000000b'::uuid], 'Pegawai bercuti') ->> 'cancelled')::int,
@@ -101,7 +101,7 @@ select is(
 -- Others
 select pg_temp.act_as('00000000-0000-0000-0000-0000000000ca');
 select is(
-  (select count(*) from public.officer_venues(current_date - 1, current_date + 30))::int,
+  (select count(*) from public.officer_venues(current_date - 1, (now() at time zone 'Asia/Kuala_Lumpur')::date + 30))::int,
   0, 'another officer sees no venues from this officer''s calendar');
 select throws_ok(
   $$ select public.remove_slots(array['e1000000-0000-0000-0000-00000000000a'::uuid], null) $$,
@@ -112,7 +112,7 @@ select throws_ok(
 
 select pg_temp.act_as('00000000-0000-0000-0000-0000000000a9');
 select throws_ok(
-  $$ select public.add_slots('c1000000-0000-0000-0000-00000000000a', current_date + 3, '09:00', '10:00', 15, 1, null) $$,
+  $$ select public.add_slots('c1000000-0000-0000-0000-00000000000a', (now() at time zone 'Asia/Kuala_Lumpur')::date + 3, '09:00', '10:00', 15, 1, null) $$,
   'not_allowed', 'a parent cannot add slots');
 
 select * from finish();

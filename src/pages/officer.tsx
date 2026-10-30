@@ -1,7 +1,7 @@
-import { useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react'
+import { useEffect, useState, type FormEvent, type ReactNode } from 'react'
 import { useSearchParams } from 'react-router'
 import { db, errorCode } from '../lib/api'
-import { enrollMfa, inviteOfficer, verifyMfa } from '../lib/auth-client'
+import { inviteOfficer } from '../lib/auth-client'
 import { useAuth } from '../lib/auth'
 import { useI18n } from '../lib/i18n'
 import { Centered, ErrorText, Loading } from '../components/Layout'
@@ -38,77 +38,17 @@ export function StaffGate({ allow, children }: { allow: Array<'officer' | 'platf
       </Centered>
     )
   }
-  if (aal !== 'aal2') return <TwoStep />
+  // Staff sign in with the email code only, which gives aal2. An older session from before
+  // that change is aal1: sign in again.
+  if (aal !== 'aal2') {
+    return (
+      <Centered>
+        <EmailSignIn staff />
+      </Centered>
+    )
+  }
   if (profile.role === 'officer' && (!profile.full_name || !profile.job_title)) return <CompleteProfile officer />
   return <>{children}</>
-}
-
-/** Set up an authenticator app the first time, verify a code every time after. */
-function TwoStep() {
-  const { t } = useI18n()
-  const [mode, setMode] = useState<'loading' | 'enrol' | 'verify'>('loading')
-  const [qr, setQr] = useState<string | null>(null)
-  const [secret, setSecret] = useState<string | null>(null)
-  const [code, setCode] = useState('')
-  const [busy, setBusy] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-
-  // React dev mode runs effects twice; a second set-up would replace the first secret,
-  // leaving the QR code on screen out of date.
-  const started = useRef(false)
-  useEffect(() => {
-    if (started.current) return
-    started.current = true
-    ;(async () => {
-      const { data, error } = await enrollMfa()
-      if (error === 'mfa_already_enrolled') return setMode('verify')
-      if (error || !data) return setError(error ?? 'generic')
-      const QRCode = await import('qrcode')
-      setQr(await QRCode.toDataURL(data.uri, { margin: 1, width: 384 }))
-      setSecret(data.secret)
-      setMode('enrol')
-    })()
-  }, [])
-
-  async function submit(e: FormEvent) {
-    e.preventDefault()
-    setBusy(true)
-    setError(null)
-    // On success the stored session becomes aal2 and the gate opens by itself.
-    const { error } = await verifyMfa(code)
-    setBusy(false)
-    if (error) setError(error === 'mfa_invalid' ? 'otp' : error)
-  }
-
-  if (mode === 'loading') return error ? <Centered><ErrorText code={error} /></Centered> : <Loading />
-
-  return (
-    <Centered>
-      <form onSubmit={submit} className="space-y-4">
-        <h2 className="text-xl font-bold">{qr ? t('mfa.enrollTitle') : t('mfa.verifyTitle')}</h2>
-        <p className="text-sm text-muted">{qr ? t('mfa.enrollBody') : t('mfa.verifyBody')}</p>
-        {qr && <img src={qr} alt="QR" className="mx-auto h-48 w-48 rounded-xl bg-white p-2" />}
-        {secret && (
-          <p className="text-center text-xs text-muted">
-            {t('mfa.manual')} <code className="break-all font-mono text-ink">{secret.replace(/(.{4})/g, '$1 ').trim()}</code>
-          </p>
-        )}
-        <input
-          className="field text-center text-2xl tracking-[0.4em]"
-          inputMode="numeric"
-          autoComplete="one-time-code"
-          maxLength={6}
-          required
-          value={code}
-          onChange={(e) => setCode(e.target.value.replace(/\D/g, ''))}
-        />
-        <ErrorText code={error} />
-        <button className="btn-primary" disabled={busy || code.length !== 6}>
-          {t('mfa.verify')}
-        </button>
-      </form>
-    </Centered>
-  )
 }
 
 /** Officer home: greeting, a top menu (Utama, Kalendar, Murid, Tetapan) and the chosen screen. */
@@ -235,7 +175,6 @@ type Officer = {
   job_title: string | null
   active: boolean
   registered: boolean
-  two_step: boolean
   invited_at: string
   last_sign_in_at: string | null
   schools: Array<{ id: string; name: string }>
@@ -373,11 +312,9 @@ function OfficerCard({ officer: o, onChange }: { officer: Officer; onChange: () 
           <p className="text-sm text-muted">{o.job_title ?? t('admin.noTitle')}</p>
         </div>
         <span
-          className={`shrink-0 rounded-full px-2.5 py-1 text-xs font-semibold ${
-            !o.active ? 'bg-page text-muted' : o.two_step ? 'bg-success/15 text-success' : 'bg-page text-muted'
-          }`}
+          className={`shrink-0 rounded-full px-2.5 py-1 text-xs font-semibold ${o.active ? 'bg-success/15 text-success' : 'bg-page text-muted'}`}
         >
-          {!o.active ? t('admin.disabled') : o.two_step ? t('admin.twoStepOn') : t('admin.twoStepOff')}
+          {o.active ? t('admin.active') : t('admin.disabled')}
         </span>
       </div>
 
@@ -393,11 +330,6 @@ function OfficerCard({ officer: o, onChange }: { officer: Officer; onChange: () 
       </dl>
 
       <div className="flex flex-wrap gap-x-4 gap-y-2 border-t border-line pt-3 text-sm font-semibold">
-        {o.two_step && o.active && (
-          <button type="button" className="text-primary" onClick={() => run('admin_reset_officer_two_step', { p_officer: o.user_id }, 'admin.resetConfirm')}>
-            {t('admin.resetTwoStep')}
-          </button>
-        )}
         {o.active ? (
           <button
             type="button"

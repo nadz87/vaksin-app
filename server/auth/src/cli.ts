@@ -1,9 +1,8 @@
 // Staff accounts from the server (the admin page does the same for health officers):
 //   node src/cli.ts create-staff --email a@b.my --role officer|platform_admin [--name "Nama"]
-//   node src/cli.ts reset-mfa   --email a@b.my     (lost phone: set up the app again)
 //   node src/cli.ts disable     --email a@b.my     (signs out everywhere, blocks sign-in)
 //   node src/cli.ts enable      --email a@b.my
-// Staff have no passwords: they sign in with an emailed code, then the authenticator app.
+// Staff have no passwords and no authenticator app: they sign in with an emailed code.
 import pg from 'pg'
 import { revokeSessions } from './sessions.ts'
 
@@ -15,7 +14,7 @@ function arg(name: string): string | undefined {
 const command = process.argv[2]
 const email = arg('email')?.trim().toLowerCase()
 if (!command || !email) {
-  console.error('Usage: node src/cli.ts create-staff|reset-mfa|disable|enable --email <email> [--role officer|platform_admin] [--name <name>]')
+  console.error('Usage: node src/cli.ts create-staff|disable|enable --email <email> [--role officer|platform_admin] [--name <name>]')
   process.exit(1)
 }
 if (!process.env.DATABASE_URL) throw new Error('DATABASE_URL is required')
@@ -35,16 +34,12 @@ try {
     await revokeSessions(db, rows[0].id)
     const page = role === 'officer' ? '#/officer' : '#/admin'
     console.log(`${email} is now ${role}.`)
-    console.log(`They open ${page}, sign in with a code sent to this email, then set up the authenticator app.`)
+    console.log(`They open ${page} and sign in with a code sent to this email.`)
   } else {
     const { rows } = await db.query('select id from auth.users where lower(email) = $1', [email])
     if (!rows[0]) throw new Error(`No account for ${email}`)
     const id = rows[0].id
-    if (command === 'reset-mfa') {
-      await db.query('delete from auth_private.mfa_factors where user_id = $1', [id])
-      await revokeSessions(db, id)
-      console.log(`${email}: authenticator removed and signed out; they set it up again at next sign-in.`)
-    } else if (command === 'disable') {
+    if (command === 'disable') {
       await db.query('update auth.users set disabled_at = now() where id = $1', [id])
       await revokeSessions(db, id)
       console.log(`${email}: disabled and signed out everywhere.`)

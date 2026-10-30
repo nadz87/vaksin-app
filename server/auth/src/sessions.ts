@@ -35,7 +35,11 @@ export async function accessToken(config: Config, user: { id: string; email: str
     .sign(config.jwtSecret)
 }
 
-/** Starts a new signed-in session (always aal1; the authenticator check raises it). */
+/**
+ * Starts a new signed-in session. Owner decision 2026-10-30: staff have no authenticator
+ * app any more; the emailed code is their whole sign-in, so a staff session starts at aal2,
+ * the level the database rules require for officer and admin data. Parents stay aal1.
+ */
 export async function startSession(
   config: Config,
   db: Queryable,
@@ -43,13 +47,15 @@ export async function startSession(
   userAgent: string | undefined,
 ): Promise<Tokens> {
   const role = await userRole(db, user.id)
-  const lifetime = STAFF_ROLES.has(role) ? config.staffSessionSeconds : config.parentSessionSeconds
+  const staff = STAFF_ROLES.has(role)
+  const aal: Aal = staff ? 'aal2' : 'aal1'
+  const lifetime = staff ? config.staffSessionSeconds : config.parentSessionSeconds
   const { rows } = await db.query(
-    `insert into auth_private.sessions (user_id, expires_at, user_agent)
-     values ($1, now() + make_interval(secs => $2), left($3, 300)) returning id`,
-    [user.id, lifetime, userAgent ?? null],
+    `insert into auth_private.sessions (user_id, aal, expires_at, user_agent)
+     values ($1, $2, now() + make_interval(secs => $3), left($4, 300)) returning id`,
+    [user.id, aal, lifetime, userAgent ?? null],
   )
-  return issueTokens(config, db, user, rows[0].id, 'aal1', role, user.must_change_password ?? false)
+  return issueTokens(config, db, user, rows[0].id, aal, role, user.must_change_password ?? false)
 }
 
 export async function issueTokens(

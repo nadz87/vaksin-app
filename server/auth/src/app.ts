@@ -1,13 +1,12 @@
 // The sign-in API. Mounted by the gateway at /auth/ (the prefix is removed before it
 // reaches here). Every error is a short code the website translates, e.g. {"error":"otp_invalid"}.
 import { Hono, type Context } from 'hono'
-import * as OTPAuth from 'otpauth'
 import type pg from 'pg'
 import type { Config } from './config.ts'
 import type { Mailer } from './mail.ts'
-import { forget, recent, record, tidy } from './rate.ts'
-import { decryptSecret, encryptSecret, hashEmailCode, newEmailCode, sameText } from './secrets.ts'
-import { STAFF_ROLES, currentSession, hashToken, issueTokens, startSession, userRole, type Aal } from './sessions.ts'
+import { recent, record, tidy } from './rate.ts'
+import { hashEmailCode, newEmailCode, sameText } from './secrets.ts'
+import { currentSession, hashToken, issueTokens, startSession, userRole, type Aal } from './sessions.ts'
 
 export const LIMITS = {
   codeMinutes: 10,
@@ -15,7 +14,6 @@ export const LIMITS = {
   startPerEmailMinute: 1,
   startPerEmailHour: 5,
   startPerIpHour: 20,
-  mfaTries: 5,
   invitesPerHour: 30,
   lockSeconds: 15 * 60,
   refreshRaceSeconds: 10,
@@ -148,58 +146,7 @@ export function createApp({ config, db, mailer }: Deps) {
     }
   })
 
-  // 3. Staff authenticator app: set up (only while not yet set up; an admin resets it).
-  //    Staff have no passwords: the emailed code above plus this app are the two steps.
-  app.post('/mfa/enroll', async (c) => {
-    const me = await currentSession(config, db, c.req.header('authorization'))
-    if (!me) return fail(c, 401, 'invalid_token')
-    if (!STAFF_ROLES.has(me.role)) return fail(c, 403, 'not_staff')
-    const { rows } = await db.query('select verified_at from auth_private.mfa_factors where user_id = $1', [me.userId])
-    if (rows[0]?.verified_at) return fail(c, 409, 'mfa_already_enrolled')
-
-    const secret = new OTPAuth.Secret({ size: 20 })
-    await db.query(
-      `insert into auth_private.mfa_factors (user_id, secret_enc) values ($1, $2)
-       on conflict (user_id) do update set secret_enc = excluded.secret_enc, last_used_step = 0, created_at = now()`,
-      [me.userId, encryptSecret(config.totpKey, secret.base32)],
-    )
-    const totp = new OTPAuth.TOTP({ issuer: 'Vaksin App', label: me.email, secret })
-    return c.json({ uri: totp.toString(), secret: secret.base32 })
-  })
-
-  // 4. Check a 6-digit authenticator code: the session becomes aal2 (2-step passed).
-  app.post('/mfa/verify', async (c) => {
-    const me = await currentSession(config, db, c.req.header('authorization'))
-    if (!me) return fail(c, 401, 'invalid_token')
-    if (!STAFF_ROLES.has(me.role)) return fail(c, 403, 'not_staff')
-    const failKey = `mfafail:${me.userId}`
-    if ((await recent(db, failKey, LIMITS.lockSeconds)) >= LIMITS.mfaTries) return fail(c, 429, 'locked')
-    const code = text(await body(c), 'code', 6)
-    const { rows } = await db.query('select secret_enc, last_used_step from auth_private.mfa_factors where user_id = $1', [me.userId])
-    if (!rows[0]) return fail(c, 404, 'mfa_not_enrolled')
-
-    const totp = new OTPAuth.TOTP({ secret: OTPAuth.Secret.fromBase32(decryptSecret(config.totpKey, rows[0].secret_enc)) })
-    const delta = code && /^\d{6}$/.test(code) ? totp.validate({ token: code, window: 1 }) : null
-    const step = delta === null ? null : Math.floor(Date.now() / 1000 / 30) + delta
-    // A code that was already accepted cannot be used again (someone looking over a shoulder).
-    if (step === null || step <= Number(rows[0].last_used_step)) {
-      await record(db, failKey)
-      return fail(c, 400, 'mfa_invalid')
-    }
-    await forget(db, failKey)
-    await db.query(
-      'update auth_private.mfa_factors set last_used_step = $2, verified_at = coalesce(verified_at, now()) where user_id = $1',
-      [me.userId, step],
-    )
-    await db.query(`update auth_private.sessions set aal = 'aal2' where id = $1`, [me.sessionId])
-    // The session gets a fresh refresh token below; the earlier one stops working.
-    await db.query('update auth_private.refresh_tokens set used_at = now() where session_id = $1 and used_at is null', [me.sessionId])
-    return c.json(
-      await issueTokens(config, db, { id: me.userId, email: me.email }, me.sessionId, 'aal2', me.role, false),
-    )
-  })
-
-  // 5. Swap a refresh token for new tokens. Each refresh token works once; using an old one
+  // 3. Swap a refresh token for new tokens. Each refresh token works once; using an old one
   //    again means it was copied, so the whole session ends. Two tabs refreshing at the same
   //    moment are not theft: within 10 seconds the late one is told to re-read the new tokens.
   app.post('/refresh', async (c) => {
@@ -256,7 +203,7 @@ export function createApp({ config, db, mailer }: Deps) {
     }
   })
 
-  // 6. Platform admin invites a health officer: the account is made (role officer) and an
+  // 4. Platform admin invites a health officer: the account is made (role officer) and an
   //    invitation email with the officer page link goes out. Inviting again resends it.
   app.post('/invite', async (c) => {
     const me = await currentSession(config, db, c.req.header('authorization'))
@@ -287,7 +234,7 @@ export function createApp({ config, db, mailer }: Deps) {
     return c.json({ ok: true, already_registered: alreadyRegistered })
   })
 
-  // 7. Sign out this device.
+  // 5. Sign out this device.
   app.post('/logout', async (c) => {
     const me = await currentSession(config, db, c.req.header('authorization'))
     if (me) await db.query('update auth_private.sessions set revoked_at = now() where id = $1', [me.sessionId])

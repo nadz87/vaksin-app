@@ -2,7 +2,6 @@
 // A fresh database `vaksin_authtest` gets every migration; the service connects as the
 // restricted vaksin_auth role, exactly as in production. Emails go to an in-memory outbox.
 import { SignJWT, decodeJwt } from 'jose'
-import * as OTPAuth from 'otpauth'
 import pg from 'pg'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { dbUrl, devEnv } from '../../dev.mjs'
@@ -17,7 +16,6 @@ const config = loadConfig({
   DATABASE_URL: authUrl,
   JWT_SECRET: env.JWT_SECRET,
   OTP_PEPPER: env.OTP_PEPPER,
-  TOTP_ENC_KEY: env.TOTP_ENC_KEY,
   SMTP_HOST: 'unused',
   MAIL_FROM: 'test@example.com',
   SITE_URL: 'https://site.test/vaksin-app/',
@@ -81,7 +79,7 @@ async function makeStaff(role: 'officer' | 'platform_admin' = 'officer') {
   return { email, id: rows[0].id as string }
 }
 
-/** Staff sign in like parents: an emailed code (then the authenticator app raises it to aal2). */
+/** Staff sign in like parents, with an emailed code; for staff that is the whole sign-in (aal2). */
 async function staffSession() {
   const staff = await makeStaff('officer')
   await call('/email/start', { body: { email: staff.email } })
@@ -90,7 +88,6 @@ async function staffSession() {
   return { ...staff, access: res.json.access_token as string, refresh: res.json.refresh_token as string }
 }
 
-const totpFor = (secret: string) => new OTPAuth.TOTP({ secret: OTPAuth.Secret.fromBase32(secret) })
 
 describe('email codes', () => {
   it('sends a code and gives the same reply for new and existing emails', async () => {
@@ -178,7 +175,7 @@ describe('tokens and sessions', () => {
       unsigned,
       parent.access_token.slice(0, -2) + (parent.access_token.endsWith('A') ? 'BB' : 'AA'),
     ]
-    for (const token of bad) expect((await call('/mfa/enroll', { token })).json.error).toBe('invalid_token')
+    for (const token of bad) expect((await call('/invite', { token, body: {} })).json.error).toBe('invalid_token')
   })
 
   it('rotates refresh tokens; an old one reused later ends the whole session', async () => {
@@ -194,13 +191,13 @@ describe('tokens and sessions', () => {
     await admin.query(`update auth_private.refresh_tokens set used_at = now() - interval '1 minute' where used_at is not null`)
     expect((await call('/refresh', { body: { refresh_token: parent.refresh_token } })).json.error).toBe('session_revoked')
     expect((await call('/refresh', { body: { refresh_token: first.json.refresh_token } })).json.error).toBe('session_revoked')
-    expect((await call('/mfa/enroll', { token: first.json.access_token })).json.error).toBe('invalid_token')
+    expect((await call('/invite', { token: first.json.access_token, body: {} })).json.error).toBe('invalid_token')
   })
 
   it('signs out: the access token and refresh token stop working', async () => {
     const parent = await signInParent()
     expect((await call('/logout', { token: parent.access_token })).status).toBe(200)
-    expect((await call('/mfa/enroll', { token: parent.access_token })).json.error).toBe('invalid_token')
+    expect((await call('/invite', { token: parent.access_token, body: {} })).json.error).toBe('invalid_token')
     expect((await call('/refresh', { body: { refresh_token: parent.refresh_token } })).json.error).toBe('session_revoked')
   })
 
@@ -215,17 +212,23 @@ describe('tokens and sessions', () => {
   })
 })
 
-describe('staff sign-in (no passwords)', () => {
-  it('staff sign in with an emailed code, at aal1 until the authenticator app', async () => {
+describe('staff sign-in (email code only)', () => {
+  it('staff get aal2 straight from the emailed code; parents stay aal1', async () => {
     const staff = await staffSession()
-    const claims = decodeJwt(staff.access)
-    expect(claims.aal).toBe('aal1')
-    expect((await call('/mfa/enroll', { token: staff.access })).status).toBe(200)
+    expect(decodeJwt(staff.access).aal).toBe('aal2')
+    const parent = await signInParent()
+    expect(decodeJwt(parent.access_token).aal).toBe('aal1')
+    // The level survives a refresh.
+    const refreshed = await call('/refresh', { body: { refresh_token: staff.refresh } })
+    expect(decodeJwt(refreshed.json.access_token).aal).toBe('aal2')
   })
 
-  it('has no password endpoints any more', async () => {
+  it('has no password or authenticator endpoints any more', async () => {
+    const staff = await staffSession()
     expect((await call('/password', { body: { email: unique(), password: 'whatever-password' } })).status).toBe(404)
     expect((await call('/password/change', { body: {} })).status).toBe(404)
+    expect((await call('/mfa/enroll', { token: staff.access })).status).toBe(404)
+    expect((await call('/mfa/verify', { token: staff.access, body: { code: '123456' } })).status).toBe(404)
   })
 
   it('an email-code sign-in clears an old temporary password', async () => {
@@ -239,64 +242,29 @@ describe('staff sign-in (no passwords)', () => {
   })
 })
 
-describe('authenticator app (2-step)', () => {
-  it('is for staff only', async () => {
-    const parent = await signInParent()
-    expect((await call('/mfa/enroll', { token: parent.access_token })).json.error).toBe('not_staff')
-  })
-
-  it('enrols, raises the session to aal2, and refuses a code used twice or out of time', async () => {
-    const staff = await staffSession()
-    const enrol = await call('/mfa/enroll', { token: staff.access })
-    expect(enrol.json.uri).toMatch(/^otpauth:\/\/totp\/Vaksin%20App:/)
-    const totp = totpFor(enrol.json.secret)
-
-    const stored = await admin.query('select secret_enc from auth_private.mfa_factors where user_id = $1', [staff.id])
-    expect(stored.rows[0].secret_enc.toString('latin1')).not.toContain(enrol.json.secret)
-
-    expect((await call('/mfa/verify', { token: staff.access, body: { code: totp.generate({ timestamp: Date.now() - 90_000 }) } })).json.error).toBe('mfa_invalid')
-
-    const code = totp.generate()
-    const ok = await call('/mfa/verify', { token: staff.access, body: { code } })
-    expect(ok.status).toBe(200)
-    expect(decodeJwt(ok.json.access_token).aal).toBe('aal2')
-    expect((await call('/mfa/verify', { token: ok.json.access_token, body: { code } })).json.error).toBe('mfa_invalid')
-
-    // The session stays aal2 across refreshes; the pre-2FA refresh token is retired.
-    const refreshed = await call('/refresh', { body: { refresh_token: ok.json.refresh_token } })
-    expect(decodeJwt(refreshed.json.access_token).aal).toBe('aal2')
-    expect((await call('/refresh', { body: { refresh_token: staff.refresh } })).status).not.toBe(200)
-
-    // Once set up, a second enrolment is refused (an admin resets it instead).
-    expect((await call('/mfa/enroll', { token: refreshed.json.access_token })).json.error).toBe('mfa_already_enrolled')
-  })
-
-  it('locks after 5 wrong codes', async () => {
-    const staff = await staffSession()
-    const totp = totpFor((await call('/mfa/enroll', { token: staff.access })).json.secret)
-    for (let i = 0; i < LIMITS.mfaTries; i++) await call('/mfa/verify', { token: staff.access, body: { code: '000000' } })
-    expect((await call('/mfa/verify', { token: staff.access, body: { code: totp.generate() } })).json.error).toBe('locked')
-  })
-})
-
 describe('officer invitations', () => {
-  /** A platform admin signed in with the emailed code and the authenticator app (aal2). */
   async function adminSession() {
     const staff = await makeStaff('platform_admin')
     await call('/email/start', { body: { email: staff.email } })
     const signedIn = await call('/email/verify', { body: { email: staff.email, code: lastCode(staff.email) } })
-    const token = signedIn.json.access_token as string
-    const totp = totpFor((await call('/mfa/enroll', { token })).json.secret)
-    const twoStep = await call('/mfa/verify', { token, body: { code: totp.generate() } })
-    expect(twoStep.json.aal).toBe('aal2')
-    return { ...staff, aal1: token, aal2: twoStep.json.access_token as string }
+    expect(signedIn.json.aal).toBe('aal2')
+    return { ...staff, token: signedIn.json.access_token as string }
   }
 
-  it('only a platform admin who passed 2-step can invite', async () => {
+  it('only a platform admin can invite; an aal1 token is not enough', async () => {
     const parent = await signInParent()
     const officer = await staffSession()
     const admin = await adminSession()
-    for (const token of [parent.access_token, officer.access, admin.aal1]) {
+    // A correctly signed token for the admin's own session, but claiming aal1.
+    const { sub, sid } = decodeJwt(admin.token) as { sub: string; sid: string }
+    const aal1 = await new SignJWT({ role: 'authenticated', aal: 'aal1', sid })
+      .setProtectedHeader({ alg: 'HS256' })
+      .setSubject(sub)
+      .setAudience('authenticated')
+      .setIssuedAt()
+      .setExpirationTime('5m')
+      .sign(new TextEncoder().encode(env.JWT_SECRET))
+    for (const token of [parent.access_token, officer.access, aal1]) {
       expect((await call('/invite', { token, body: { email: unique('invitee') } })).json.error).toBe('not_allowed')
     }
     expect((await call('/invite', { body: { email: unique('invitee') } })).json.error).toBe('invalid_token')
@@ -305,26 +273,26 @@ describe('officer invitations', () => {
   it('creates the officer account and emails the officer page link; inviting again resends', async () => {
     const admin = await adminSession()
     const email = unique('invitee')
-    const first = await call('/invite', { token: admin.aal2, body: { email: email.toUpperCase() } })
+    const first = await call('/invite', { token: admin.token, body: { email: email.toUpperCase() } })
     expect(first).toEqual({ status: 200, json: { ok: true, already_registered: false } })
     expect(invites.at(-1)).toEqual({ to: email, link: 'https://site.test/vaksin-app/#/officer' })
     const { rows } = await admin_query('select p.role from public.profiles p join auth.users u on u.id = p.user_id where u.email = $1', [email])
     expect(rows[0].role).toBe('officer')
 
-    expect((await call('/invite', { token: admin.aal2, body: { email } })).status).toBe(200)
+    expect((await call('/invite', { token: admin.token, body: { email } })).status).toBe(200)
     expect(invites.filter((m) => m.to === email)).toHaveLength(2)
 
-    // The invited officer signs in with a code and can go on to set up 2-step.
+    // The invited officer signs in with a code and has full officer access (aal2).
     await call('/email/start', { body: { email } })
     const signedIn = await call('/email/verify', { body: { email, code: lastCode(email) } })
     expect(signedIn.json.user.role).toBe('officer')
-    expect((await call('/mfa/enroll', { token: signedIn.json.access_token })).status).toBe(200)
+    expect(signedIn.json.aal).toBe('aal2')
   })
 
   it('refuses a bad email and an admin account', async () => {
     const admin = await adminSession()
-    expect((await call('/invite', { token: admin.aal2, body: { email: 'nope' } })).json.error).toBe('invalid_email')
-    expect((await call('/invite', { token: admin.aal2, body: { email: admin.email } })).json.error).toBe('already_admin')
+    expect((await call('/invite', { token: admin.token, body: { email: 'nope' } })).json.error).toBe('invalid_email')
+    expect((await call('/invite', { token: admin.token, body: { email: admin.email } })).json.error).toBe('already_admin')
   })
 })
 

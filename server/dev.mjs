@@ -14,7 +14,7 @@ const COMPOSE = ['compose', '-f', `${here}compose.dev.yml`, '--env-file', ENV_FI
 
 // Every secret the local stack needs. Missing ones are added with random values, so an
 // older .env.dev picks up new secrets without losing the ones the database already uses.
-const SECRETS = ['DB_PASSWORD', 'AUTHENTICATOR_PASSWORD', 'AUTH_DB_PASSWORD', 'JWT_SECRET', 'OTP_PEPPER', 'TOTP_ENC_KEY']
+const SECRETS = ['DB_PASSWORD', 'AUTHENTICATOR_PASSWORD', 'AUTH_DB_PASSWORD', 'JWT_SECRET', 'OTP_PEPPER']
 
 function readEnv() {
   if (!existsSync(ENV_FILE)) return {}

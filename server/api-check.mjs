@@ -4,9 +4,7 @@
 import { execFileSync } from 'node:child_process'
 import { createHmac } from 'node:crypto'
 import { readFileSync } from 'node:fs'
-import { createRequire } from 'node:module'
 
-const OTPAuth = createRequire(new URL('auth/package.json', import.meta.url))('otpauth')
 
 const envFile = new URL('.env.dev', import.meta.url)
 const env = Object.fromEntries(readFileSync(envFile, 'utf8').split(/\r?\n/).filter((l) => /^[A-Z_]+=/.test(l)).map((l) => [l.slice(0, l.indexOf('=')), l.slice(l.indexOf('=') + 1)]))
@@ -48,7 +46,7 @@ function check(name, ok, detail) {
 }
 
 const schools = await call('/rest/rpc/list_schools', { method: 'POST', body: {} })
-check('anon can list the 25 schools', schools.status === 200 && schools.json.length === 25, schools)
+check('anon can list the 27 schools (16 SKPP + 11 SMKPP)', schools.status === 200 && schools.json.length === 27, schools)
 
 const kids = await call('/rest/students?select=id')
 check('anon sees no students (row-level security)', kids.status === 200 && kids.json.length === 0, kids)
@@ -114,22 +112,19 @@ await call('/auth/logout', { method: 'POST', token: signedIn.json.access_token }
 const after = await call('/auth/refresh', { method: 'POST', body: { refresh_token: signedIn.json.refresh_token } })
 check('after sign-out the refresh token is dead', after.status === 401, after)
 
-// Staff, end to end (no passwords): an admin from the server CLI signs in with a code and
-// the authenticator app, invites an officer by email, the officer signs in the same way,
+// Staff, end to end (no passwords, no authenticator app): an admin from the server CLI signs
+// in with a code, invites an officer by email, the officer signs in the same way,
 // chooses a school, and the admin sees it.
 async function staffSignIn(email) {
   await call('/auth/email/start', { method: 'POST', body: { email } })
-  const signedIn = await call('/auth/email/verify', { method: 'POST', body: { email, code: await codeFromInbox(email) } })
-  const enrol = await call('/auth/mfa/enroll', { method: 'POST', token: signedIn.json.access_token })
-  const totp = new OTPAuth.TOTP({ secret: OTPAuth.Secret.fromBase32(enrol.json.secret ?? 'AAAA') })
-  return call('/auth/mfa/verify', { method: 'POST', token: signedIn.json.access_token, body: { code: totp.generate() } })
+  return call('/auth/email/verify', { method: 'POST', body: { email, code: await codeFromInbox(email) } })
 }
 const adminEmail = `admin.${Date.now()}@test.local`
 const staffEmail = `officer.${Date.now()}@test.local`
 const cliOut = execFileSync('docker', ['exec', 'vaksin-dev-auth-1', 'node', 'src/cli.ts', 'create-staff', '--email', adminEmail, '--role', 'platform_admin'], { encoding: 'utf8' })
 check('CLI creates a platform admin (no password)', cliOut.includes('is now platform_admin'), cliOut)
 const adminIn = await staffSignIn(adminEmail)
-check('admin signs in with an emailed code and the authenticator app (aal2)', adminIn.status === 200 && adminIn.json.aal === 'aal2', adminIn.json)
+check('admin signs in with an emailed code only (aal2 straight away)', adminIn.status === 200 && adminIn.json.aal === 'aal2', adminIn.json)
 
 const invite = await call('/auth/invite', { method: 'POST', token: adminIn.json.access_token, body: { email: staffEmail } })
 const inviteMail = await (await fetch(`http://127.0.0.1:8025/api/v1/search?query=${encodeURIComponent(`to:${staffEmail} subject:Jemputan`)}`)).json()
@@ -147,7 +142,7 @@ check('officer chooses a school', joined.status === 200 || joined.status === 204
 const listed = await call('/rest/rpc/admin_officers', { method: 'POST', token: adminIn.json.access_token, body: {} })
 const mine = Array.isArray(listed.json) ? listed.json.find((o) => o.email === staffEmail) : null
 check('admin sees the officer, registered, with that school',
-  mine?.registered === true && mine?.two_step === true && mine?.schools?.[0]?.id === school.id, listed.json)
+  mine?.registered === true && mine?.schools?.[0]?.id === school.id, listed.json)
 const asOfficer = await call('/rest/rpc/admin_officers', { method: 'POST', token: officerIn.json.access_token, body: {} })
 check('an officer cannot see the officer list', asOfficer.status >= 400, asOfficer.status)
 

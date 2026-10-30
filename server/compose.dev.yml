@@ -48,7 +48,6 @@ services:
       DATABASE_URL: postgres://vaksin_auth:${AUTH_DB_PASSWORD}@db:5432/vaksin
       JWT_SECRET: ${JWT_SECRET}
       OTP_PEPPER: ${OTP_PEPPER}
-      TOTP_ENC_KEY: ${TOTP_ENC_KEY}
       # Local test inbox: every email lands in Mailpit (http://127.0.0.1:8025), none go out.
       SMTP_HOST: mailpit
       SMTP_PORT: "1025"
