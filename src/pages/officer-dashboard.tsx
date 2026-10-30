@@ -4,6 +4,7 @@ import { db, errorCode } from '../lib/api'
 import { useI18n } from '../lib/i18n'
 import { addDays, dayKey, formatDate, formatMonth, formatTime, isoWeekday, monthDays, shiftMonth, shortDate, tileLabel, todayKey, weekStart } from '../lib/time'
 import { Icon } from '../components/icons'
+import { RemoveButton } from '../components/RemoveButton'
 import { ErrorText, Loading } from '../components/Layout'
 import type { Place } from '../lib/places'
 
@@ -447,6 +448,9 @@ export function SlotCalendar({
   const toRemove = chosen.filter((s) => s.status === 'open')
   const toReopen = chosen.filter((s) => s.status === 'blocked')
   const bookedInChosen = toRemove.reduce((n, s) => n + s.bookings.filter((b) => b.status === 'booked').length, 0)
+  // The date's trash button: every open slot on the day.
+  const dayOpen = daySlots.filter((s) => s.status === 'open')
+  const dayBooked = dayOpen.reduce((n, s) => n + s.bookings.filter((b) => b.status === 'booked').length, 0)
 
   function toggle(id: string) {
     setPicked((p) => (p.includes(id) ? p.filter((x) => x !== id) : [...p, id]))
@@ -465,6 +469,16 @@ export function SlotCalendar({
     setPicked([])
     setReason('')
     load()
+  }
+
+  async function removeDay() {
+    const { data, error } = await db().rpc('remove_slots', { p_ids: dayOpen.map((s) => s.id), p_reason: null })
+    if (error) return errorCode(error)
+    const r = data as { deleted: number; blocked: number; cancelled: number }
+    setMessage(t('sl.removedMsg').replace('{d}', String(r.deleted)).replace('{b}', String(r.blocked)).replace('{c}', String(r.cancelled)))
+    setPicked([])
+    await load()
+    return null
   }
 
   async function reopen() {
@@ -535,9 +549,20 @@ export function SlotCalendar({
       {day && (
         <>
           <section className="card space-y-3">
-            <h3 className="text-lg font-bold">
-              {t('sl.on')} {shortDate(day, lang)}
-            </h3>
+            <div className="flex flex-wrap items-center gap-2">
+              <h3 className="min-w-0 flex-1 text-lg font-bold">
+                {t('sl.on')} {shortDate(day, lang)}
+              </h3>
+              {dayOpen.length > 0 && (
+                <RemoveButton
+                  label={t('sl.removeDay')}
+                  confirmText={(dayBooked > 0 ? t('sl.removeConfirm') : t('sl.removeConfirmEmpty'))
+                    .replace('{n}', String(dayOpen.length))
+                    .replace('{b}', String(dayBooked))}
+                  onRemove={removeDay}
+                />
+              )}
+            </div>
             {slots === null && <Loading />}
             {slots && daySlots.length === 0 && <p className="text-sm text-muted">{t('sl.none')}</p>}
             {daySlots.length > 0 && <p className="text-xs text-muted">{t('sl.select')}</p>}
@@ -573,7 +598,8 @@ export function SlotCalendar({
                   <input className="field" placeholder={t('cal.blockReason')} value={reason} onChange={(e) => setReason(e.target.value)} maxLength={200} />
                 )}
                 {toRemove.length > 0 && (
-                  <button className="btn-ghost text-danger" disabled={busy} onClick={remove}>
+                  <button className="btn-ghost inline-flex items-center justify-center gap-2 text-danger" disabled={busy} onClick={remove}>
+                    <Icon name="trash" className="h-5 w-5" />
                     {t('sl.remove').replace('{n}', String(toRemove.length))}
                   </button>
                 )}

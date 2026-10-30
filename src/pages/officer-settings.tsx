@@ -1,11 +1,13 @@
-import { useCallback, useEffect, useState, type FormEvent } from 'react'
+import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react'
 import { db, errorCode } from '../lib/api'
 import { useAuth } from '../lib/auth'
 import { useI18n } from '../lib/i18n'
 import { displayMyPhone, normalizeMyPhone } from '../lib/phone'
+import { dayKey, formatDate, formatTime } from '../lib/time'
 import type { Place } from '../lib/places'
 import { ErrorText, Loading } from '../components/Layout'
 import { Icon } from '../components/icons'
+import { RemoveButton } from '../components/RemoveButton'
 import { TypeIcon } from '../components/TypeIcon'
 import { ExportTab } from './officer-students'
 
@@ -117,48 +119,6 @@ function removedText(t: (k: string) => string, name: string, r: Removal) {
   return (r.cancelled > 0 ? t('rm.doneCancelled') : t('rm.done')).replace('{s}', name).replace('{n}', String(r.cancelled))
 }
 
-/** A row's trash button, then "remove X?" with the consequence spelled out, then the result. */
-function RemoveButton({ label, confirmText, onRemove }: { label: string; confirmText: string; onRemove: () => Promise<string | null> }) {
-  const { t } = useI18n()
-  const [asking, setAsking] = useState(false)
-  const [busy, setBusy] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-
-  if (!asking) {
-    return (
-      <button type="button" aria-label={label} title={label} className="grid h-10 w-10 shrink-0 place-items-center rounded-xl text-danger hover:bg-danger/10" onClick={() => setAsking(true)}>
-        <Icon name="trash" className="h-5 w-5" />
-      </button>
-    )
-  }
-  return (
-    <div className="basis-full space-y-2 rounded-2xl bg-danger/5 p-3">
-      <p className="text-sm">{confirmText}</p>
-      <ErrorText code={error} />
-      <div className="flex gap-2">
-        <button
-          type="button"
-          className="rounded-xl bg-danger px-4 py-2 text-sm font-semibold text-white disabled:opacity-60"
-          disabled={busy}
-          onClick={async () => {
-            setBusy(true)
-            setError(null)
-            const code = await onRemove()
-            setBusy(false)
-            if (code) setError(code)
-            else setAsking(false)
-          }}
-        >
-          {t('rm.yes')}
-        </button>
-        <button type="button" className="rounded-xl px-4 py-2 text-sm font-semibold text-ink" disabled={busy} onClick={() => setAsking(false)}>
-          {t('rm.no')}
-        </button>
-      </div>
-    </div>
-  )
-}
-
 /** Every location with its parent link; any officer can add one or remove an added one. */
 function Locations({ locations, onChanged }: { locations: Place[]; onChanged: () => Promise<Place[]> }) {
   const { t } = useI18n()
@@ -232,19 +192,27 @@ function Locations({ locations, onChanged }: { locations: Place[]; onChanged: ()
 }
 
 type TypeRow = { id: string; name_ms: string; name_en: string; icon: string; color: string }
+type UpSlot = { id: string; starts_at: string; ends_at: string; capacity: number; appointment_type_id: string; location_name: string; booked: number }
+type SlotRemoval = { deleted: number; blocked: number; cancelled: number }
 
-/** Jenis temujanji: the list parents choose from. Shared by every officer. */
+/** Jenis temujanji: the list parents choose from (shared by every officer), and each type's upcoming slots. */
 function TypesTab() {
   const { t, lang } = useI18n()
   const [types, setTypes] = useState<TypeRow[] | null>(null)
+  const [slots, setSlots] = useState<UpSlot[]>([])
+  const [open, setOpen] = useState<string | null>(null)
   const [name, setName] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [message, setMessage] = useState<string | null>(null)
 
   const load = useCallback(async () => {
-    const { data } = await db().from('appointment_types').select('id, name_ms, name_en, icon, color').eq('active', true).order('sort_order')
+    const [{ data }, { data: up }] = await Promise.all([
+      db().from('appointment_types').select('id, name_ms, name_en, icon, color').eq('active', true).order('sort_order'),
+      db().rpc('officer_upcoming_slots'),
+    ])
     setTypes((data as TypeRow[]) ?? [])
+    setSlots((up as UpSlot[]) ?? [])
   }, [])
   useEffect(() => {
     load()
@@ -270,6 +238,15 @@ function TypesTab() {
     return null
   }
 
+  async function removeSlots(ids: string[]) {
+    const { data, error } = await db().rpc('remove_slots', { p_ids: ids, p_reason: null })
+    if (error) return errorCode(error)
+    const r = data as SlotRemoval
+    setMessage(t('sl.removedMsg').replace('{d}', String(r.deleted)).replace('{b}', String(r.blocked)).replace('{c}', String(r.cancelled)))
+    await load()
+    return null
+  }
+
   if (!types) return <Loading />
 
   return (
@@ -279,13 +256,32 @@ function TypesTab() {
         <p className="text-sm text-muted">{t('type.body')}</p>
         {message && <p className="text-sm font-medium text-success">{message}</p>}
         <ul className="divide-y divide-line">
-          {types.map((x) => (
-            <li key={x.id} className="flex flex-wrap items-center gap-3 py-2">
-              <TypeIcon name={x.icon} color={x.color} />
-              <p className="min-w-0 flex-1 font-medium">{lang === 'en' ? x.name_en : x.name_ms}</p>
-              <RemoveButton label={t('type.remove')} confirmText={t('type.removeConfirm').replace('{s}', x.name_ms)} onRemove={() => remove(x)} />
-            </li>
-          ))}
+          {types.map((x) => {
+            const mine = slots.filter((s) => s.appointment_type_id === x.id)
+            const shown = open === x.id && mine.length > 0
+            return (
+              <li key={x.id} className="py-2">
+                <div className="flex flex-wrap items-center gap-3">
+                  <TypeIcon name={x.icon} color={x.color} />
+                  <button
+                    type="button"
+                    className="min-w-0 flex-1 text-left disabled:cursor-default"
+                    disabled={mine.length === 0}
+                    aria-expanded={shown}
+                    onClick={() => setOpen(shown ? null : x.id)}
+                  >
+                    <span className="block font-medium">{lang === 'en' ? x.name_en : x.name_ms}</span>
+                    <span className={`flex items-center gap-1 text-sm ${mine.length > 0 ? 'text-primary' : 'text-muted'}`}>
+                      {mine.length > 0 ? t('type.slotCount').replace('{n}', String(mine.length)) : t('type.noSlots')}
+                      {mine.length > 0 && <Icon name="right" className={`h-4 w-4 transition ${shown ? 'rotate-90' : ''}`} />}
+                    </span>
+                  </button>
+                  <RemoveButton label={t('type.remove')} confirmText={t('type.removeConfirm').replace('{s}', x.name_ms)} onRemove={() => remove(x)} />
+                </div>
+                {shown && <TypeSlots key={mine.map((s) => s.id).join()} slots={mine} onRemove={removeSlots} />}
+              </li>
+            )
+          })}
         </ul>
       </section>
 
@@ -301,6 +297,87 @@ function TypesTab() {
           {t('type.save')}
         </button>
       </form>
+    </div>
+  )
+}
+
+/** One type's upcoming slots by date: tick slots (or a whole date) to remove them, or use a date's trash. */
+function TypeSlots({ slots, onRemove }: { slots: UpSlot[]; onRemove: (ids: string[]) => Promise<string | null> }) {
+  const { t, lang } = useI18n()
+  const [picked, setPicked] = useState<string[]>([])
+
+  const days = useMemo(() => {
+    const map = new Map<string, UpSlot[]>()
+    for (const s of slots) {
+      const k = dayKey(s.starts_at)
+      map.set(k, [...(map.get(k) ?? []), s])
+    }
+    return [...map]
+  }, [slots])
+  const chosen = slots.filter((s) => picked.includes(s.id))
+
+  function tick(ids: string[], on: boolean) {
+    setPicked((p) => (on ? [...new Set([...p, ...ids])] : p.filter((x) => !ids.includes(x))))
+  }
+
+  // Say how many parents get the cancellation email before anything is removed.
+  function confirmText(list: UpSlot[]) {
+    const booked = list.reduce((n, s) => n + s.booked, 0)
+    return (booked > 0 ? t('sl.removeConfirm') : t('sl.removeConfirmEmpty')).replace('{n}', String(list.length)).replace('{b}', String(booked))
+  }
+
+  return (
+    <div className="mt-3 space-y-4 rounded-2xl bg-page p-3">
+      {days.map(([k, list]) => (
+        <div key={k}>
+          <div className="flex flex-wrap items-center gap-2">
+            <label className="flex min-w-0 flex-1 items-center gap-3 font-semibold">
+              <input
+                type="checkbox"
+                className="h-5 w-5 shrink-0 accent-primary"
+                checked={list.every((s) => picked.includes(s.id))}
+                onChange={(e) => tick(list.map((s) => s.id), e.target.checked)}
+              />
+              {formatDate(`${k}T04:00:00Z`, lang)}
+            </label>
+            <RemoveButton
+              label={t('type.removeDay').replace('{d}', formatDate(`${k}T04:00:00Z`, lang))}
+              confirmText={confirmText(list)}
+              onRemove={() => onRemove(list.map((s) => s.id))}
+            />
+          </div>
+          <ul>
+            {list.map((s) => (
+              <li key={s.id}>
+                <label className="flex items-center gap-3 py-2 pl-8 text-sm">
+                  <input
+                    type="checkbox"
+                    className="h-5 w-5 shrink-0 accent-primary"
+                    checked={picked.includes(s.id)}
+                    onChange={(e) => tick([s.id], e.target.checked)}
+                  />
+                  <span className="min-w-0 flex-1">
+                    <span className="block font-medium">
+                      {t('type.timeRange').replace('{a}', formatTime(s.starts_at, lang)).replace('{b}', formatTime(s.ends_at, lang))}
+                    </span>
+                    <span className="block truncate text-muted">{s.location_name}</span>
+                  </span>
+                  <span className={`shrink-0 ${s.booked > 0 ? 'font-medium text-primary' : 'text-muted'}`}>
+                    {t('type.booked').replace('{b}', String(s.booked)).replace('{c}', String(s.capacity))}
+                  </span>
+                </label>
+              </li>
+            ))}
+          </ul>
+        </div>
+      ))}
+      {chosen.length > 0 && (
+        <div className="flex flex-wrap border-t border-line pt-3">
+          <RemoveButton label={t('type.removePicked')} confirmText={confirmText(chosen)} onRemove={() => onRemove(chosen.map((s) => s.id))}>
+            {t('type.removePicked').replace('{n}', String(chosen.length))}
+          </RemoveButton>
+        </div>
+      )}
     </div>
   )
 }
