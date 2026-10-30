@@ -1,7 +1,7 @@
 -- Vaksin App: security rule tests. Run with `npm run db:test`.
 begin;
 create extension if not exists pgtap with schema extensions;
-select plan(20);
+select plan(21);
 
 -- Fixtures ----------------------------------------------------------------
 -- Users (the auth trigger creates a 'parent' profile for each).
@@ -42,9 +42,9 @@ select lives_ok(
   'parent joins a school by picking it, no code needed');
 
 select throws_ok(
-  $$ select public.register_child('10000000-0000-0000-0000-000000000002', 'Ali', '150312101235',
+  $$ select public.register_child('10000000-0000-0000-0000-0000000000ff', 'Ali', '150312101235',
        '2015-03-12', 'male', '4 Bestari', 'father', true) $$,
-  'not_joined_school', 'cannot register a child at a school you have not joined');
+  'school_not_found', 'cannot register a child at an unknown or hidden school');
 
 select throws_ok(
   $$ select public.register_child('10000000-0000-0000-0000-000000000001', 'Ali', '150312101234',
@@ -96,10 +96,21 @@ select throws_ok(
 
 -- Officer -----------------------------------------------------------------
 select pg_temp.act_as('00000000-0000-0000-0000-0000000000c1', 'aal1');
-select is((select count(*) from public.students)::int, 0, 'officer without 2FA sees no students');
+select is((select count(*) from public.students)::int, 0, 'an officer token without staff level sees no students');
 
 select pg_temp.act_as('00000000-0000-0000-0000-0000000000c1', 'aal2');
-select is((select count(*) from public.students)::int, 1, 'officer with 2FA sees school A student');
+select is((select count(*) from public.students)::int, 0, 'an officer sees no child before the child books with them');
+
+-- The child books one of the officer's slots at KK P18.
+reset role;
+insert into public.slots (id, officer_id, location_id, starts_at, ends_at, capacity) values
+  ('11000000-0000-0000-0000-000000000001', '00000000-0000-0000-0000-0000000000c1',
+   (select id from public.locations where slug = 'kkp18'), now() + interval '3 days', now() + interval '3 days 15 minutes', 1);
+insert into public.appointments (slot_id, student_id, type_id, booked_by)
+select '11000000-0000-0000-0000-000000000001', (select id from public.students limit 1), t.id, '00000000-0000-0000-0000-0000000000a1'
+  from public.appointment_types t where t.code = 'screening';
+select pg_temp.act_as('00000000-0000-0000-0000-0000000000c1', 'aal2');
+select is((select count(*) from public.students)::int, 1, 'after booking, the officer sees that child');
 
 select is(public.reveal_mykid((select id from public.students limit 1)), '150312101235',
   'officer can reveal the full MyKid');
@@ -110,7 +121,7 @@ select is((select count(*) from public.audit_log where action = 'reveal_mykid'):
 -- Platform admin -----------------------------------------------------------
 select pg_temp.act_as('00000000-0000-0000-0000-0000000000d1', 'aal2');
 select is((select count(*) from public.students)::int, 0,
-  'platform admin manages schools but cannot read student data');
+  'platform admin manages officers but cannot read student data');
 
 select * from finish();
 rollback;

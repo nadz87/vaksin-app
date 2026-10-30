@@ -27,11 +27,11 @@ insert into public.student_guardians (student_id, guardian_id) values
 
 -- A slot earlier today (Malaysia time) with a booking, and one in 2 days with a booking.
 -- "today" slot: use the current Malaysian date at 00:10-00:25 so it always counts as today.
-insert into public.slots (id, officer_id, school_id, starts_at, ends_at, capacity) values
-  ('e1000000-0000-0000-0000-00000000000a', '00000000-0000-0000-0000-0000000000c9', 'c1000000-0000-0000-0000-00000000000a',
+insert into public.slots (id, officer_id, location_id, starts_at, ends_at, capacity) values
+  ('e1000000-0000-0000-0000-00000000000a', '00000000-0000-0000-0000-0000000000c9', (select id from public.locations where slug = 'kkp18'),
    ((now() at time zone 'Asia/Kuala_Lumpur')::date + time '00:10') at time zone 'Asia/Kuala_Lumpur',
    ((now() at time zone 'Asia/Kuala_Lumpur')::date + time '00:25') at time zone 'Asia/Kuala_Lumpur', 1),
-  ('e1000000-0000-0000-0000-00000000000b', '00000000-0000-0000-0000-0000000000c9', 'c1000000-0000-0000-0000-00000000000a',
+  ('e1000000-0000-0000-0000-00000000000b', '00000000-0000-0000-0000-0000000000c9', (select id from public.locations where slug = 'kkp18'),
    now() + interval '2 days', now() + interval '2 days 15 minutes', 1);
 insert into public.appointments (id, slot_id, student_id, type_id, booked_by)
 select 'f1000000-0000-0000-0000-00000000000a', 'e1000000-0000-0000-0000-00000000000a', 'd1000000-0000-0000-0000-00000000000a', t.id,
@@ -49,19 +49,19 @@ $$;
 -- Officer of school A -------------------------------------------------------
 select pg_temp.act_as('00000000-0000-0000-0000-0000000000c9');
 
-select is((public.officer_dashboard('c1000000-0000-0000-0000-00000000000a') ->> 'students_total')::int, 2,
-  'dashboard counts the registered students');
-select is((public.officer_dashboard('c1000000-0000-0000-0000-00000000000a') ->> 'students_booked')::int, 2,
+select is((public.officer_dashboard() ->> 'students_total')::int, 2,
+  'dashboard counts the children who booked the officer''s slots');
+select is((public.officer_dashboard() ->> 'students_booked')::int, 2,
   'dashboard counts the students who made an appointment');
-select is((public.officer_dashboard('c1000000-0000-0000-0000-00000000000a') ->> 'today_total')::int, 1,
+select is((public.officer_dashboard() ->> 'today_total')::int, 1,
   'dashboard counts today''s appointments');
-select is((public.officer_dashboard('c1000000-0000-0000-0000-00000000000a') ->> 'today_done')::int, 0,
+select is((public.officer_dashboard() ->> 'today_done')::int, 0,
   'nothing is marked done yet');
 
 -- Venue: where the officer is scheduled
 select is(
-  (select school_name from public.officer_venues((now() at time zone 'Asia/Kuala_Lumpur')::date, (now() at time zone 'Asia/Kuala_Lumpur')::date)),
-  'Home School A', 'the officer''s venue today is the school where their slots are');
+  (select location_name from public.officer_venues((now() at time zone 'Asia/Kuala_Lumpur')::date, (now() at time zone 'Asia/Kuala_Lumpur')::date)),
+  'Klinik Kesihatan Putrajaya P18', 'the officer''s venue today is the location where their slots are');
 select is(
   (select booked from public.officer_venues((now() at time zone 'Asia/Kuala_Lumpur')::date, (now() at time zone 'Asia/Kuala_Lumpur')::date)),
   1, 'the venue counts what is booked there');
@@ -73,24 +73,24 @@ select throws_ok(
 select lives_ok(
   $$ select public.set_appointment_outcome('f1000000-0000-0000-0000-00000000000a', 'completed') $$,
   'today''s appointment can be marked done');
-select is((public.officer_dashboard('c1000000-0000-0000-0000-00000000000a') ->> 'today_done')::int, 1,
+select is((public.officer_dashboard() ->> 'today_done')::int, 1,
   'the dashboard shows it as done');
 select throws_ok(
   $$ select public.set_appointment_outcome('f1000000-0000-0000-0000-00000000000a', 'cancelled') $$,
   'bad_status', 'the officer cannot set a status that is not booked, done or no-show');
 
 -- Adding slots: 09:00-10:00 in 15 minutes, 3 days ahead = 4 slots; again adds nothing
-select is(public.add_slots('c1000000-0000-0000-0000-00000000000a', (now() at time zone 'Asia/Kuala_Lumpur')::date + 3, '09:00', '10:00', 15, 1, null), 4,
+select is(public.add_slots((select id from public.locations where slug = 'kkp18'), null, (now() at time zone 'Asia/Kuala_Lumpur')::date + 3, '09:00', '10:00', 15, 1), 4,
   'adding 09:00-10:00 in 15-minute steps creates 4 slots');
-select is(public.add_slots('c1000000-0000-0000-0000-00000000000a', (now() at time zone 'Asia/Kuala_Lumpur')::date + 3, '09:00', '10:00', 15, 1, null), 0,
+select is(public.add_slots((select id from public.locations where slug = 'kkp18'), null, (now() at time zone 'Asia/Kuala_Lumpur')::date + 3, '09:00', '10:00', 15, 1), 0,
   'adding the same times again creates nothing (no overlap)');
 select throws_ok(
-  $$ select public.add_slots('c1000000-0000-0000-0000-00000000000a', (now() at time zone 'Asia/Kuala_Lumpur')::date + 3, '10:00', '09:00', 15, 1, null) $$,
+  $$ select public.add_slots((select id from public.locations where slug = 'kkp18'), null, (now() at time zone 'Asia/Kuala_Lumpur')::date + 3, '10:00', '09:00', 15, 1) $$,
   'bad_slot', 'an end time before the start time is refused');
 
 -- Removing slots: an unbooked one is deleted, a booked one is blocked and its booking cancelled
 select is(
-  (public.remove_slots(array[(select id from public.slots where school_id = 'c1000000-0000-0000-0000-00000000000a'
+  (public.remove_slots(array[(select id from public.slots where location_id = (select id from public.locations where slug = 'kkp18')
                               and (starts_at at time zone 'Asia/Kuala_Lumpur')::date = (now() at time zone 'Asia/Kuala_Lumpur')::date + 3
                               and (starts_at at time zone 'Asia/Kuala_Lumpur')::time = '09:00')], 'Cuti') ->> 'deleted')::int,
   1, 'an unbooked slot is deleted');
@@ -105,14 +105,13 @@ select is(
   0, 'another officer sees no venues from this officer''s calendar');
 select throws_ok(
   $$ select public.remove_slots(array['e1000000-0000-0000-0000-00000000000a'::uuid], null) $$,
-  'not_allowed', 'an officer of another school cannot remove slots');
-select throws_ok(
-  $$ select public.officer_dashboard('c1000000-0000-0000-0000-00000000000a') $$,
-  'not_allowed', 'an officer of another school cannot see the numbers');
+  'not_allowed', 'another officer cannot remove this officer''s slots');
+select is((public.officer_dashboard() ->> 'students_total')::int, 0,
+  'another officer''s numbers do not include this officer''s children');
 
 select pg_temp.act_as('00000000-0000-0000-0000-0000000000a9');
 select throws_ok(
-  $$ select public.add_slots('c1000000-0000-0000-0000-00000000000a', (now() at time zone 'Asia/Kuala_Lumpur')::date + 3, '09:00', '10:00', 15, 1, null) $$,
+  $$ select public.add_slots((select id from public.locations where slug = 'kkp18'), null, (now() at time zone 'Asia/Kuala_Lumpur')::date + 3, '09:00', '10:00', 15, 1) $$,
   'not_allowed', 'a parent cannot add slots');
 
 select * from finish();

@@ -10,7 +10,7 @@ import { ErrorText, Loading } from '../components/Layout'
 
 type Child = { id: string; full_name: string; school_id: string; schools: { name: string } | null }
 type ApptType = { id: string; code: string; name_ms: string; name_en: string; icon: string; color: string; needs_reason: boolean }
-type Slot = { id: string; starts_at: string; ends_at: string; appointment_type_id: string | null; capacity: number; remaining: number }
+type Slot = { id: string; starts_at: string; ends_at: string; appointment_type_id: string | null; capacity: number; remaining: number; location_id: string; location_name: string }
 type Step = 'what' | 'when' | 'confirm' | 'done'
 
 /** P5-P8: who + what, then date tiles + time chips, then confirm, then success. */
@@ -49,7 +49,7 @@ export function BookFlow() {
   const loadSlots = useCallback(async () => {
     if (!child) return
     setSlots(null)
-    const { data } = await db().rpc('available_slots', { p_school: child.school_id })
+    const { data } = await db().rpc('available_slots', { p_student: child.id })
     setSlots((data as Slot[]) ?? [])
   }, [child])
 
@@ -71,6 +71,8 @@ export function BookFlow() {
     return map
   }, [typeSlots])
 
+  // Show the clinic under each time only when slots are spread over more than one.
+  const manyPlaces = new Set(typeSlots.map((s) => s.location_id)).size > 1
   const type = types.find((x) => x.id === typeId) ?? null
   const slot = typeSlots.find((s) => s.id === slotId) ?? null
   const typeName = (x: ApptType) => (lang === 'en' ? x.name_en : x.name_ms)
@@ -107,7 +109,7 @@ export function BookFlow() {
       title: `${typeName(type)}: ${child.full_name}`,
       start: slot.starts_at,
       end: slot.ends_at,
-      location: child.schools?.name ?? '',
+      location: slot.location_name,
       uid: slot.id + child.id,
     })
     const a = document.createElement('a')
@@ -252,6 +254,7 @@ export function BookFlow() {
                   }`}
                 >
                   {formatTime(s.starts_at, lang)}
+                  {manyPlaces && <span className="block truncate text-xs opacity-75">{s.location_name}</span>}
                   {s.capacity > 1 && (
                     <span className="block text-xs opacity-75">
                       {s.remaining} {t('book.placesLeft')}
@@ -283,6 +286,7 @@ export function BookFlow() {
           <Row label={t('child.school')} value={child.schools?.name ?? ''} />
           <Row label={t('book.date')} value={formatDate(slot.starts_at, lang)} />
           <Row label={t('book.at')} value={formatTime(slot.starts_at, lang)} />
+          <Row label={t('loc.label')} value={slot.location_name} />
           {profile?.phone && <Row label={t('book.contact')} value={`${profile.full_name} · ${displayMyPhone(profile.phone)}`} />}
         </div>
         <label className="block">
@@ -312,6 +316,7 @@ export function BookFlow() {
           <p className="font-semibold">
             {formatDate(slot.starts_at, lang)}, {formatTime(slot.starts_at, lang)}
           </p>
+          <p className="text-sm text-muted">{slot.location_name}</p>
         </div>
         <p className="text-sm text-muted">{t('book.doneBody')}</p>
         <button className="btn-ghost" onClick={addToCalendar}>{t('book.addCalendar')}</button>

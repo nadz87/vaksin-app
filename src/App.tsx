@@ -5,7 +5,7 @@ import { useAuth } from './lib/auth'
 import { useI18n } from './lib/i18n'
 import { Centered, Loading, Shell } from './components/Layout'
 import { RequireParentProfile } from './components/CompleteProfile'
-import { AddChild, CancelAppointments, JoinSchool, ParentHome, ParentProfile, SchoolLanding, Welcome } from './pages/parent'
+import { AddChild, CancelAppointments, ClinicLanding, ParentHome, ParentProfile, Welcome } from './pages/parent'
 import { AdminOfficers, OfficerHome, StaffGate } from './pages/officer'
 import { BookFlow } from './pages/book'
 import { StudentProfile } from './pages/officer-students'
@@ -17,8 +17,9 @@ const router = createHashRouter([
     element: <Shell><Outlet /></Shell>,
     children: [
       { path: '/', element: <Home /> },
-      { path: '/s/:slug', element: <SchoolLanding /> },
-      { path: '/join', element: <SignedIn><JoinSchool /></SignedIn> },
+      { path: '/s/:slug', element: <ClinicLanding /> },
+      // Old link from the school-joining screen, removed 2026-10-30.
+      { path: '/join', element: <Navigate to="/" replace /> },
       { path: '/children/new', element: <SignedIn><AddChild /></SignedIn> },
       { path: '/children/:id', element: <SignedIn><ChildEdit /></SignedIn> },
       { path: '/book', element: <SignedIn><BookFlow /></SignedIn> },

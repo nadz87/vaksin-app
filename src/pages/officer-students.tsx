@@ -7,13 +7,13 @@ import { addDays, dayKey, formatDate, formatTime, todayKey } from '../lib/time'
 import { Icon } from '../components/icons'
 import { buildWorkbook, downloadBlob, type AppointmentRow, type StudentRow } from '../lib/xlsx-export'
 import { ErrorText, Loading } from '../components/Layout'
-import type { CalSchool } from './officer-calendar'
 
 type ListRow = {
   id: string
   student_no: string
   full_name: string
   class_name: string
+  school_name: string
   gender: string
   date_of_birth: string
   mykid_last4: string
@@ -25,7 +25,7 @@ type ListRow = {
 
 // ------------------------------------------------------------- Student list
 
-export function StudentsTab({ school }: { school: CalSchool }) {
+export function StudentsTab() {
   const { t, lang } = useI18n()
   const [rows, setRows] = useState<ListRow[] | null>(null)
   const [query, setQuery] = useState('')
@@ -33,14 +33,14 @@ export function StudentsTab({ school }: { school: CalSchool }) {
   useEffect(() => {
     setRows(null)
     db()
-      .rpc('officer_students', { p_school: school.id })
+      .rpc('officer_students')
       .then(({ data }) => setRows((data as ListRow[]) ?? []))
-  }, [school.id])
+  }, [])
 
   const shown = useMemo(() => {
     const q = query.trim().toLowerCase()
     if (!q || !rows) return rows ?? []
-    return rows.filter((r) => [r.full_name, r.student_no, r.class_name, r.parent_name ?? ''].some((v) => v.toLowerCase().includes(q)))
+    return rows.filter((r) => [r.full_name, r.student_no, r.class_name, r.school_name, r.parent_name ?? ''].some((v) => v.toLowerCase().includes(q)))
   }, [rows, query])
 
   if (!rows) return <Loading />
@@ -83,11 +83,11 @@ export function StudentsTab({ school }: { school: CalSchool }) {
                 <tr key={r.id} className="border-b border-line last:border-0 hover:bg-page">
                   <td className="whitespace-nowrap px-4 py-3 font-semibold tracking-wide">{r.student_no}</td>
                   <td className="px-4 py-3">
-                    <Link className="font-semibold text-primary" to={`/officer/student/${r.id}?school=${school.id}`}>
+                    <Link className="font-semibold text-primary" to={`/officer/student/${r.id}`}>
                       {r.full_name}
                     </Link>
                   </td>
-                  <td className="whitespace-nowrap px-4 py-3">{r.class_name}</td>
+                  <td className="px-4 py-3">{r.class_name}<span className="block text-xs text-muted">{r.school_name}</span></td>
                   <td className="px-4 py-3">
                     {r.parent_name ?? '—'}
                     {r.parent_phone && <span className="block text-xs text-muted">{displayMyPhone(r.parent_phone)}</span>}
@@ -175,7 +175,6 @@ export function StudentProfile() {
   const { t, lang } = useI18n()
   const { id = '' } = useParams()
   const [params] = useSearchParams()
-  const schoolParam = params.get('school')
   const apptId = params.get('appointment')
   const [data, setData] = useState<Profile | null | undefined>(undefined)
   const [mykid, setMykid] = useState<string | null>(null)
@@ -208,11 +207,10 @@ export function StudentProfile() {
   }
 
   // Back goes to where the officer came from: the day list or the student list.
-  const school = schoolParam ? `&school=${schoolParam}` : ''
   const back =
     params.get('from') === 'calendar'
-      ? `/officer?s=calendar${school}${params.get('day') ? `&day=${params.get('day')}` : ''}`
-      : `/officer?s=students${school}`
+      ? `/officer?s=calendar${params.get('day') ? `&day=${params.get('day')}` : ''}`
+      : `/officer?s=students`
 
   if (data === undefined) return <Loading />
   if (data === null) {
@@ -444,9 +442,8 @@ function Field({ label, value, block = false }: { label: string; value: string; 
 
 // ------------------------------------------------------------- Excel export
 
-const slugify = (name: string) => name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')
 
-export function ExportTab({ school }: { school: CalSchool }) {
+export function ExportTab() {
   const { t, lang } = useI18n()
   const [withStudents, setWithStudents] = useState(true)
   const [withAppts, setWithAppts] = useState(true)
@@ -469,17 +466,17 @@ export function ExportTab({ school }: { school: CalSchool }) {
       let students: StudentRow[] | undefined
       let appointments: AppointmentRow[] | undefined
       if (withStudents) {
-        const { data, error } = await db().rpc('export_students', { p_school: school.id, p_include_mykid: includeMykid })
+        const { data, error } = await db().rpc('export_students', { p_include_mykid: includeMykid })
         if (error) throw error
         students = data as StudentRow[]
       }
       if (withAppts) {
-        const { data, error } = await db().rpc('export_appointments', { p_school: school.id, p_from: from, p_to: to })
+        const { data, error } = await db().rpc('export_appointments', { p_from: from, p_to: to })
         if (error) throw error
         appointments = data as AppointmentRow[]
       }
       const blob = await buildWorkbook({ lang, students, appointments, includeMykid: withStudents && includeMykid })
-      downloadBlob(blob, `vaksin-${slugify(school.name)}-${dayKey(new Date())}.xlsx`)
+      downloadBlob(blob, `vaksin-${dayKey(new Date())}.xlsx`)
       setMessage(
         t('exp.done')
           .replace('{s}', String(students?.length ?? 0))
@@ -490,13 +487,13 @@ export function ExportTab({ school }: { school: CalSchool }) {
     } finally {
       setBusy(false)
     }
-  }, [withStudents, withAppts, includeMykid, from, to, school.id, school.name, lang, t])
+  }, [withStudents, withAppts, includeMykid, from, to, lang, t])
 
   return (
     <div className="mx-auto max-w-2xl space-y-4">
       <section className="card space-y-4">
         <h2 className="text-lg font-bold">{t('exp.title')}</h2>
-        <p className="text-sm text-muted">{school.name}</p>
+        <p className="text-sm text-muted">{t('exp.mine')}</p>
 
         <fieldset className="space-y-3">
           <legend className="label">{t('exp.what')}</legend>

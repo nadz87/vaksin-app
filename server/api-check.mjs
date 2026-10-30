@@ -41,7 +41,7 @@ async function call(path, { token, method = 'GET', body, origin } = {}) {
 
 let failed = 0
 function check(name, ok, detail) {
-  console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}${ok ? '' : `  -> ${JSON.stringify(detail).slice(0, 200)}`}`)
+  console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}${ok ? '' : `  -> ${String(JSON.stringify(detail)).slice(0, 200)}`}`)
   if (!ok) failed++
 }
 
@@ -58,10 +58,11 @@ for (const path of ['/rest/users', '/rest/applied', '/rest/'])
 const good2 = jwt({ sub: OFFICER, aal: 'aal2' })
 const me = await call(`/rest/profiles?select=role&user_id=eq.${OFFICER}`, { token: good2 })
 check('signed token: officer reads own profile', me.status === 200 && me.json[0]?.role === 'officer', me)
-const dash2 = await call('/rest/slots?select=id', { token: good2 })
-check('officer with 2FA (aal2) sees own slots', dash2.status === 200 && dash2.json.length > 0, { status: dash2.status, n: dash2.json.length })
-const dash1 = await call('/rest/slots?select=id', { token: jwt({ sub: OFFICER, aal: 'aal1' }) })
-check('officer without 2FA (aal1) sees no slots', dash1.status === 200 && dash1.json.length === 0, dash1)
+const range = { p_from: new Date().toISOString().slice(0, 10), p_to: new Date(Date.now() + 30 * 86400_000).toISOString().slice(0, 10) }
+const dash2 = await call('/rest/rpc/officer_slots', { method: 'POST', token: good2, body: range })
+check('officer at staff level (aal2) sees own calendar', dash2.status === 200 && dash2.json.length > 0, { status: dash2.status, n: dash2.json?.length })
+const dash1 = await call('/rest/rpc/officer_slots', { method: 'POST', token: jwt({ sub: OFFICER, aal: 'aal1' }), body: range })
+check('an aal1 officer token is refused the calendar', dash1.status >= 400, dash1)
 
 const forged = [
   ['wrong secret', jwt({ sub: OFFICER, aal: 'aal2' }, { secret: 'not-the-secret' })],
@@ -136,20 +137,27 @@ check('admin invites an officer: the email carries the officer page link',
 
 const officerIn = await staffSignIn(staffEmail)
 check('the invited officer signs in the same way (aal2)', officerIn.status === 200 && officerIn.json.user?.role === 'officer' && officerIn.json.aal === 'aal2', officerIn.json)
-const school = (await call('/rest/rpc/list_schools', { method: 'POST', body: {} })).json[0]
-const joined = await call('/rest/rpc/officer_join_school', { method: 'POST', token: officerIn.json.access_token, body: { p_school: school.id } })
-check('officer chooses a school', joined.status === 200 || joined.status === 204, joined)
+const clinic = (await call('/rest/locations?select=id,name,slug&slug=eq.kkp18')).json?.[0]
+check('anyone can look up the default clinic location (KK P18)', clinic?.name === 'Klinik Kesihatan Putrajaya P18', clinic)
+const inThreeDays = new Date(Date.now() + 3 * 86400_000).toLocaleDateString('en-CA', { timeZone: 'Asia/Kuala_Lumpur' })
+const added = await call('/rest/rpc/add_slots', {
+  method: 'POST',
+  token: officerIn.json.access_token,
+  body: { p_location: clinic?.id, p_type: null, p_date: inThreeDays, p_start: '09:00', p_end: '09:30', p_minutes: 15, p_capacity: 1 },
+})
+check('officer adds slots at the clinic', added.status === 200 && added.json === 2, added)
 const listed = await call('/rest/rpc/admin_officers', { method: 'POST', token: adminIn.json.access_token, body: {} })
 const mine = Array.isArray(listed.json) ? listed.json.find((o) => o.email === staffEmail) : null
-check('admin sees the officer, registered, with that school',
-  mine?.registered === true && mine?.schools?.[0]?.id === school.id, listed.json)
+check('admin sees the officer, registered, running slots at KK P18',
+  mine?.registered === true && mine?.locations?.[0]?.name === clinic?.name, listed.json)
 const asOfficer = await call('/rest/rpc/admin_officers', { method: 'POST', token: officerIn.json.access_token, body: {} })
 check('an officer cannot see the officer list', asOfficer.status >= 400, asOfficer.status)
 
 // Leave the dev database as it was: test accounts, their audit entries and this run's
 // rate-limit counters go, so running the checks many times an hour never trips a limit.
 const testEmails = [parentEmail, spoofEmail, staffEmail, adminEmail].map((e) => `'${e}'`).join(', ')
-psql(`delete from public.audit_log where actor_id in (select id from auth.users where email in (${testEmails}))
+psql(`delete from public.slots where officer_id in (select id from auth.users where email in (${testEmails}));
+      delete from public.audit_log where actor_id in (select id from auth.users where email in (${testEmails}))
          or entity_id in (select id from auth.users where email in (${testEmails}));
       delete from auth.users where email in (${testEmails});
       delete from auth_private.rate_events where created_at >= '${startedAt}'`)

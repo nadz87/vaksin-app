@@ -11,10 +11,11 @@ import { EmailSignIn } from '../components/EmailSignIn'
 import { Centered, ErrorText, Loading } from '../components/Layout'
 
 type School = { id: string; name: string; slug: string; logo_url?: string | null }
+type Place = { id: string; name: string; slug: string; address: string | null }
 type PickSchool = School & { level: 'rendah' | 'menengah'; state: string | null }
 type Child = { id: string; full_name: string; class_name: string; mykid_last4: string; school_id: string; student_no: string }
 
-/** "/" for someone who is not signed in and has no school link. */
+/** "/" for someone who is not signed in and has no clinic link. */
 export function Welcome() {
   const { t } = useI18n()
   return (
@@ -28,126 +29,33 @@ export function Welcome() {
   )
 }
 
-/** "/s/:slug" is the link and QR code each school shares with parents. */
-export function SchoolLanding() {
+/**
+ * "/s/:slug" is the clinic link officers share with parents (Klinik Kesihatan Putrajaya P18
+ * is /s/kkp18). Any parent can book there; the child's school is set on the child's profile.
+ * Older school links (shared before 2026-10-30) still land here and simply open the sign-in.
+ */
+export function ClinicLanding() {
   const { slug = '' } = useParams()
-  const { t } = useI18n()
   const { session, loading } = useAuth()
-  const navigate = useNavigate()
-  const [school, setSchool] = useState<School | null | undefined>(undefined)
-  const [error, setError] = useState<string | null>(null)
+  const [place, setPlace] = useState<Place | null | undefined>(undefined)
 
   useEffect(() => {
     db()
-      .rpc('get_school_by_slug', { p_slug: slug })
-      .then(({ data }) => setSchool((data as School[] | null)?.[0] ?? null))
+      .from('locations')
+      .select('id, name, slug, address')
+      .eq('slug', slug)
+      .then(({ data }) => setPlace((data as Place[] | null)?.[0] ?? null))
   }, [slug])
 
-  // Once signed in: join this school automatically.
-  useEffect(() => {
-    if (!session || !school) return
-    db()
-      .rpc('join_school', { p_slug: school.slug })
-      .then(({ error }) => (error ? setError(errorCode(error)) : navigate('/', { replace: true })))
-  }, [session, school, navigate])
-
-  if (loading || school === undefined) return <Loading />
-  if (school === null) return <Navigate to="/" replace />
+  if (loading || place === undefined) return <Loading />
+  if (session || place === null) return <Navigate to="/" replace />
 
   return (
     <div className="space-y-4">
-      <SchoolBadge school={school} />
-      <ErrorText code={error} />
-      {!session && (
-        <Centered>
-          <EmailSignIn />
-        </Centered>
-      )}
-      {session && !error && <Loading />}
-      {error && (
-        <Link to="/join" className="btn-ghost">
-          {t('join.title')}
-        </Link>
-      )}
-    </div>
-  )
-}
-
-/** Pick your child's school by name. No school code (owner decision 2026-10-29). */
-export function JoinSchool() {
-  const { t } = useI18n()
-  const navigate = useNavigate()
-  const [schools, setSchools] = useState<PickSchool[] | null>(null)
-  const [joined, setJoined] = useState<Set<string>>(new Set())
-  const [query, setQuery] = useState('')
-  const [busy, setBusy] = useState<string | null>(null)
-  const [error, setError] = useState<string | null>(null)
-
-  useEffect(() => {
-    Promise.all([db().rpc('list_schools'), db().from('schools').select('id')]).then(([all, mine]) => {
-      setSchools((all.data as PickSchool[]) ?? [])
-      setJoined(new Set(((mine.data as Array<{ id: string }>) ?? []).map((s) => s.id)))
-    })
-  }, [])
-
-  async function join(school: School) {
-    setBusy(school.id)
-    setError(null)
-    const { error } = await db().rpc('join_school', { p_slug: school.slug })
-    setBusy(null)
-    if (error) setError(errorCode(error))
-    else navigate('/', { replace: true })
-  }
-
-  if (!schools) return <Loading />
-
-  const q = query.trim().toLowerCase()
-  const matches = schools.filter((s) => !q || s.name.toLowerCase().includes(q) || s.state?.toLowerCase().includes(q))
-
-  return (
-    <div className="space-y-4">
-      <div>
-        <h2 className="text-xl font-bold">{t('join.title')}</h2>
-        <p className="text-sm text-muted">{t('join.body')}</p>
-      </div>
-      <input
-        className="field"
-        type="search"
-        placeholder={t('join.search')}
-        aria-label={t('join.search')}
-        value={query}
-        onChange={(e) => setQuery(e.target.value)}
-      />
-      <ErrorText code={error} />
-      {matches.length === 0 && <p className="card text-sm text-muted">{t('join.none')}</p>}
-      {(['rendah', 'menengah'] as const).map((level) => {
-        const group = matches.filter((s) => s.level === level)
-        if (group.length === 0) return null
-        return (
-          <section key={level} className="space-y-2">
-            <h3 className="pt-2 text-sm font-semibold uppercase tracking-wide text-muted">{t(`join.${level}`)}</h3>
-            <ul className="space-y-2">
-              {group.map((s) => {
-                const isJoined = joined.has(s.id)
-                return (
-                  <li key={s.id}>
-                    <button
-                      className="flex min-h-14 w-full items-center justify-between gap-3 rounded-2xl bg-surface px-4 py-3 text-left shadow-[0_4px_14px_rgba(31,52,110,0.05)] transition hover:ring-2 hover:ring-primary/30 disabled:opacity-60"
-                      disabled={busy !== null || isJoined}
-                      onClick={() => join(s)}
-                    >
-                      <span className="font-semibold">{s.name}</span>
-                      <span className="shrink-0 text-sm font-medium text-primary">
-                        {isJoined ? `✓ ${t('join.joined')}` : busy === s.id ? t('common.loading') : t('join.submit')}
-                      </span>
-                    </button>
-                  </li>
-                )
-              })}
-            </ul>
-          </section>
-        )
-      })}
+      <PlaceBadge place={place} />
+      <Centered>
+        <EmailSignIn />
+      </Centered>
     </div>
   )
 }
@@ -169,7 +77,6 @@ export function ParentHome() {
   }, [])
 
   if (schools === null) return <Loading />
-  if (schools.length === 0) return <Navigate to="/join" replace />
 
   return (
     <div className="space-y-5">
@@ -473,6 +380,7 @@ type MyAppt = {
   starts_at: string
   student_name: string
   school_name: string
+  location_name: string
   type_name_ms: string
   type_name_en: string
   can_cancel: boolean
@@ -527,6 +435,7 @@ function MyAppointments() {
               <p className="text-sm text-muted">
                 {a.student_name} · {a.school_name}
               </p>
+              <p className="text-sm text-muted">{a.location_name}</p>
             </div>
             <Link to={`/cancel?appointment=${a.id}`} className="shrink-0 text-sm font-semibold text-danger">
               {t('mine.cancelShort')}
@@ -627,6 +536,7 @@ export function CancelAppointments() {
             <p className="text-sm text-muted">
               {a.student_name} · {a.school_name}
             </p>
+            <p className="text-sm text-muted">{a.location_name}</p>
             <p className="text-sm font-medium text-primary">
               {formatDate(a.starts_at, lang)}, {formatTime(a.starts_at, lang)}
             </p>
@@ -684,16 +594,13 @@ export function AddChild() {
   const navigate = useNavigate()
   const [params] = useSearchParams()
   const [allSchools, setAllSchools] = useState<PickSchool[] | null>(null)
-  const [joinedIds, setJoinedIds] = useState<string[]>([])
-  const [pickedSchool, setPickedSchool] = useState(params.get('school') ?? '')
-  // A parent with exactly one school gets it preselected; otherwise they choose.
-  const schoolId = pickedSchool || (joinedIds.length === 1 ? joinedIds[0] : '')
+  // Any school in the list; parents type their child's school here, nothing to join first.
+  const [schoolId, setSchoolId] = useState(params.get('school') ?? '')
 
   useEffect(() => {
-    Promise.all([db().rpc('list_schools'), db().from('schools').select('id')]).then(([all, mine]) => {
-      setAllSchools((all.data as PickSchool[]) ?? [])
-      setJoinedIds(((mine.data as Array<{ id: string }>) ?? []).map((x) => x.id))
-    })
+    db()
+      .rpc('list_schools')
+      .then(({ data }) => setAllSchools((data as PickSchool[]) ?? []))
   }, [])
 
   const [fullName, setFullName] = useState('')
@@ -721,15 +628,6 @@ export function AddChild() {
     e.preventDefault()
     setBusy(true)
     setError(null)
-    // Choosing a school here also joins it, so there is no separate "add school" step.
-    const chosen = allSchools?.find((x) => x.id === schoolId)
-    if (chosen && !joinedIds.includes(chosen.id)) {
-      const { error: joinError } = await db().rpc('join_school', { p_slug: chosen.slug })
-      if (joinError) {
-        setBusy(false)
-        return setError(errorCode(joinError))
-      }
-    }
     const { data, error } = await db().rpc('register_child', {
       p_school_id: schoolId,
       p_full_name: fullName,
@@ -768,7 +666,7 @@ export function AddChild() {
 
       <label className="block">
         <span className="label">{t('child.school')}</span>
-        <select className="field" required value={schoolId} onChange={(e) => setPickedSchool(e.target.value)}>
+        <select className="field" required value={schoolId} onChange={(e) => setSchoolId(e.target.value)}>
           <option value="" disabled />
           {(['rendah', 'menengah'] as const).map((level) => (
             <optgroup key={level} label={t(`join.${level}`)}>
@@ -858,20 +756,17 @@ export function AddChild() {
   )
 }
 
-function SchoolBadge({ school }: { school: School }) {
+function PlaceBadge({ place }: { place: Place }) {
   const { t } = useI18n()
   return (
     <div className="flex items-center gap-3">
-      {school.logo_url ? (
-        <img src={school.logo_url} alt="" className="h-11 w-11 rounded-xl object-cover" />
-      ) : (
-        <div className="grid h-11 w-11 place-items-center rounded-xl bg-accent-soft font-bold text-accent">
-          {school.name.slice(0, 2).toUpperCase()}
-        </div>
-      )}
+      <div className="grid h-11 w-11 shrink-0 place-items-center rounded-xl bg-accent-soft font-bold text-accent">
+        {place.name.slice(0, 2).toUpperCase()}
+      </div>
       <div>
-        <p className="text-xs text-muted">{t('child.school')}</p>
-        <p className="font-semibold">{school.name}</p>
+        <p className="text-xs text-muted">{t('loc.label')}</p>
+        <p className="font-semibold">{place.name}</p>
+        {place.address && <p className="text-sm text-muted">{place.address}</p>}
       </div>
     </div>
   )

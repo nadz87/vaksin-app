@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent, type ReactNode } from 'react'
+import { useCallback, useEffect, useState, type FormEvent, type ReactNode } from 'react'
 import { useSearchParams } from 'react-router'
 import { db, errorCode } from '../lib/api'
 import { inviteOfficer } from '../lib/auth-client'
@@ -7,10 +7,10 @@ import { useI18n } from '../lib/i18n'
 import { Centered, ErrorText, Loading } from '../components/Layout'
 import { CompleteProfile } from '../components/CompleteProfile'
 import { EmailSignIn } from '../components/EmailSignIn'
-import type { CalSchool } from './officer-calendar'
+import type { Place } from './officer-calendar'
 import { StudentsTab } from './officer-students'
 import { CalendarScreen, HomeScreen } from './officer-dashboard'
-import { MySchools, SETTINGS_VIEWS, SettingsScreen } from './officer-settings'
+import { SETTINGS_VIEWS, SettingsScreen } from './officer-settings'
 import { Icon, type IconName } from '../components/icons'
 
 
@@ -55,12 +55,11 @@ export function StaffGate({ allow, children }: { allow: Array<'officer' | 'platf
 export function OfficerHome() {
   const { t } = useI18n()
   const { profile, session } = useAuth()
-  const [schools, setSchools] = useState<CalSchool[] | null>(null)
-  // Section, view, school and day live in the address, so Back from a student profile lands in the same place.
+  const [locations, setLocations] = useState<Place[] | null>(null)
+  // Section, view and day live in the address, so Back from a student profile lands in the same place.
   const [params, setParams] = useSearchParams()
   const sections = ['home', 'calendar', 'students', 'settings'] as const
   const section = sections.find((x) => x === params.get('s')) ?? 'home'
-  const schoolId = params.get('school')
   const day = params.get('day') ?? undefined
   const view = params.get('v')
 
@@ -75,20 +74,19 @@ export function OfficerHome() {
     setParams(p, { replace: true })
   }
 
-  // Officers only see the schools they chose; this reloads after they add or leave one.
-  const [reloads, setReloads] = useState(0)
+  // Every clinic location; any officer can add one, and the list reloads after that.
+  const loadLocations = useCallback(async () => {
+    const { data } = await db().from('locations').select('id, name, slug, weekend_days, address').order('name')
+    const list = (data as Place[]) ?? []
+    setLocations(list)
+    return list
+  }, [])
   useEffect(() => {
-    db()
-      .from('schools')
-      .select('id, name, weekend_days, slug')
-      .order('name')
-      .then(({ data }) => setSchools((data as CalSchool[]) ?? []))
-  }, [reloads])
-  const schoolsChanged = () => setReloads((n) => n + 1)
+    loadLocations()
+  }, [loadLocations])
 
-  if (!schools) return <Loading />
+  if (!locations) return <Loading />
 
-  const school = schools.find((s) => s.id === schoolId) ?? schools[0] ?? null
   const name = profile?.full_name ?? session?.user.email ?? ''
 
   const menu: Array<{ key: (typeof sections)[number]; icon: IconName }> = [
@@ -108,14 +106,7 @@ export function OfficerHome() {
           <p className="truncate text-lg font-semibold">
             {t('oh.hello')} {name}
           </p>
-          {school && (
-            <p className="truncate text-sm text-muted">
-              {school.name} ·{' '}
-              <button className="font-medium text-primary" onClick={() => go({ s: 'settings' })}>
-                {t('oh.change')}
-              </button>
-            </p>
-          )}
+          {profile?.job_title && <p className="truncate text-sm text-muted">{profile.job_title}</p>}
         </div>
       </div>
 
@@ -138,29 +129,23 @@ export function OfficerHome() {
         })}
       </nav>
 
-      {schools.length === 0 && <MySchools first mine={[]} onChange={schoolsChanged} />}
-
-      {school && section === 'home' && <HomeScreen key={school.id} school={school} go={(s, v) => go({ s, ...(v ? { v } : {}) })} />}
-      {school && section === 'calendar' && (
+      {section === 'home' && <HomeScreen go={(s, v) => go({ s, ...(v ? { v } : {}) })} />}
+      {section === 'calendar' && (
         <CalendarScreen
-          key={school.id}
-          school={school}
-          schools={schools}
+          locations={locations}
+          onLocationsChanged={loadLocations}
           initialDay={day}
           view={view === 'slots' ? 'slots' : 'list'}
           onView={(v) => go({ v: v === 'slots' ? 'slots' : '' })}
-          onSwitchSchool={(id, d) => go({ school: id, day: d })}
         />
       )}
-      {school && section === 'students' && <StudentsTab key={school.id} school={school} />}
-      {school && section === 'settings' && (
+      {section === 'students' && <StudentsTab />}
+      {section === 'settings' && (
         <SettingsScreen
-          schools={schools}
-          school={school}
-          view={SETTINGS_VIEWS.find((x) => x === view) ?? 'school'}
+          locations={locations}
+          onLocationsChanged={loadLocations}
+          view={SETTINGS_VIEWS.find((x) => x === view) ?? 'account'}
           onView={(v) => go({ v })}
-          onPickSchool={(id) => go({ school: id })}
-          onSchoolsChanged={schoolsChanged}
         />
       )}
     </div>
@@ -177,12 +162,12 @@ type Officer = {
   registered: boolean
   invited_at: string
   last_sign_in_at: string | null
-  schools: Array<{ id: string; name: string }>
+  locations: Array<{ id: string; name: string }>
 }
 
 /**
  * iMotion platform admin: invite health officers by email and see their profiles.
- * Officers complete their own profile and choose their schools.
+ * Officers complete their own profile, then add slots at any clinic location.
  */
 export function AdminOfficers() {
   const { t } = useI18n()
@@ -323,8 +308,8 @@ function OfficerCard({ officer: o, onChange }: { officer: Officer; onChange: () 
         <dd className="break-all">{o.email}</dd>
         <dt className="text-muted">{t('profile.phone')}</dt>
         <dd>{o.phone ?? '—'}</dd>
-        <dt className="text-muted">{t('admin.schoolsServed')}</dt>
-        <dd>{o.schools.length ? o.schools.map((s) => s.name).join(', ') : t('admin.noSchools')}</dd>
+        <dt className="text-muted">{t('admin.locationsServed')}</dt>
+        <dd>{o.locations.length ? o.locations.map((l) => l.name).join(', ') : t('admin.noLocations')}</dd>
         <dt className="text-muted">{t('admin.lastSignIn')}</dt>
         <dd>{o.last_sign_in_at ? dateText(o.last_sign_in_at, lang) : '—'}</dd>
       </dl>

@@ -5,7 +5,7 @@ import { useI18n } from '../lib/i18n'
 import { addDays, dayKey, formatDate, formatMonth, formatTime, isoWeekday, monthDays, shiftMonth, shortDate, tileLabel, todayKey, weekStart } from '../lib/time'
 import { Icon } from '../components/icons'
 import { ErrorText, Loading } from '../components/Layout'
-import type { CalSchool } from './officer-calendar'
+import type { Place } from './officer-calendar'
 
 type Booking = {
   appointment_id: string
@@ -14,6 +14,7 @@ type Booking = {
   student_no: string
   student_name: string
   class_name: string
+  school_name: string
   type_ms: string
   type_en: string
   note: string | null
@@ -27,6 +28,8 @@ type OSlot = {
   capacity: number
   status: 'open' | 'blocked'
   appointment_type_id: string | null
+  location_id: string
+  location_name: string
   booked: number
   bookings: Booking[]
 }
@@ -45,9 +48,10 @@ type Stats = {
 
 type Venue = {
   day: string
-  school_id: string
-  school_name: string
-  state: string | null
+  location_id: string
+  location_name: string
+  location_slug: string
+  address: string | null
   first_start: string
   last_end: string
   slots: number
@@ -59,7 +63,7 @@ const pct = (n: number, d: number) => (d > 0 ? Math.round((n / d) * 100) : null)
 // ------------------------------------------------------------------- Home
 
 /** Home: big numbers first (students who made appointments, today's schedule, attendance, slots filled). */
-export function HomeScreen({ school, go }: { school: CalSchool; go: (section: string, view?: string) => void }) {
+export function HomeScreen({ go }: { go: (section: string, view?: string) => void }) {
   const { t, lang } = useI18n()
   const [stats, setStats] = useState<Stats | null>(null)
   const [venues, setVenues] = useState<Venue[]>([])
@@ -67,12 +71,12 @@ export function HomeScreen({ school, go }: { school: CalSchool; go: (section: st
   useEffect(() => {
     setStats(null)
     db()
-      .rpc('officer_dashboard', { p_school: school.id })
+      .rpc('officer_dashboard')
       .then(({ data }) => setStats(data as Stats))
     db()
       .rpc('officer_venues', { p_from: todayKey(), p_to: todayKey() })
       .then(({ data }) => setVenues((data as Venue[]) ?? []))
-  }, [school.id])
+  }, [])
 
   if (!stats) return <Loading />
 
@@ -117,11 +121,10 @@ export function HomeScreen({ school, go }: { school: CalSchool; go: (section: st
               </span>
             ) : (
               venues.map((v) => (
-                <span key={v.school_id} className="flex items-start gap-1.5">
+                <span key={v.location_id} className="flex items-start gap-1.5">
                   <Icon name="pin" className="mt-0.5 h-4 w-4 shrink-0 text-accent" />
                   <span>
-                    <span className="font-medium">{v.school_name}</span>
-                    {v.school_id !== school.id && <span className="text-muted"> ({t('dh.otherSchool')})</span>}
+                    <span className="font-medium">{v.location_name}</span>
                     <span className="block text-xs text-muted">
                       {formatTime(v.first_start, lang)} – {formatTime(v.last_end, lang)}
                     </span>
@@ -192,17 +195,7 @@ const statusTone = {
 } as const
 
 /** Calendar: pick a day, see every child booked that day with the appointment type and time. */
-export function DayCalendar({
-  school,
-  schools,
-  initialDay,
-  onSwitchSchool,
-}: {
-  school: CalSchool
-  schools: CalSchool[]
-  initialDay?: string
-  onSwitchSchool: (schoolId: string, day: string) => void
-}) {
+export function DayCalendar({ initialDay }: { initialDay?: string }) {
   const { t, lang } = useI18n()
   const [day, setDay] = useState(initialDay ?? todayKey())
   // The venue whose "share with parents" panel is open.
@@ -214,12 +207,12 @@ export function DayCalendar({
   useEffect(() => {
     setSlots(null)
     db()
-      .rpc('officer_slots', { p_school: school.id, p_from: start, p_to: addDays(start, 6) })
+      .rpc('officer_slots', { p_from: start, p_to: addDays(start, 6) })
       .then(({ data }) => setSlots((data as OSlot[]) ?? []))
     db()
       .rpc('officer_venues', { p_from: start, p_to: addDays(start, 6) })
       .then(({ data }) => setVenues((data as Venue[]) ?? []))
-  }, [school.id, start])
+  }, [start])
 
   const dayVenues = venues.filter((v) => v.day === day)
 
@@ -286,39 +279,32 @@ export function DayCalendar({
         </p>
       ) : (
         dayVenues.map((v) => (
-          <div key={v.school_id} className="flex items-start gap-3 rounded-2xl bg-surface px-4 py-3 shadow-[0_4px_14px_rgba(31,52,110,0.06)]">
+          <div key={v.location_id} className="flex items-start gap-3 rounded-2xl bg-surface px-4 py-3 shadow-[0_4px_14px_rgba(31,52,110,0.06)]">
             <span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-accent-soft text-accent">
               <Icon name="pin" />
             </span>
             <div className="min-w-0 flex-1">
               <p className="text-xs text-muted">{t('dc.venue')}</p>
               <p className="font-semibold">
-                {v.school_name}
-                {v.state && <span className="font-normal text-muted"> · {v.state}</span>}
+                {v.location_name}
+                {v.address && <span className="font-normal text-muted"> · {v.address}</span>}
               </p>
               <p className="text-sm text-muted">
                 {formatTime(v.first_start, lang)} – {formatTime(v.last_end, lang)} · {t('dc.venueStats').replace('{s}', String(v.slots)).replace('{b}', String(v.booked))}
               </p>
               <div className="mt-1 flex flex-wrap gap-x-4 gap-y-1">
-                {v.school_id !== school.id && (
-                  <button className="text-sm font-semibold text-primary" onClick={() => onSwitchSchool(v.school_id, day)}>
-                    {t('dc.switch')}
-                  </button>
-                )}
-                {schools.some((s) => s.id === v.school_id) && (
-                  <button
-                    className="inline-flex items-center gap-1 text-sm font-semibold text-primary"
-                    aria-expanded={sharing === v.school_id}
-                    onClick={() => setSharing((x) => (x === v.school_id ? null : v.school_id))}
-                  >
-                    <Icon name="message" className="h-4 w-4" />
-                    {t('share.title')}
-                  </button>
-                )}
+                <button
+                  className="inline-flex items-center gap-1 text-sm font-semibold text-primary"
+                  aria-expanded={sharing === v.location_id}
+                  onClick={() => setSharing((x) => (x === v.location_id ? null : v.location_id))}
+                >
+                  <Icon name="message" className="h-4 w-4" />
+                  {t('share.title')}
+                </button>
               </div>
-              {sharing === v.school_id && (
+              {sharing === v.location_id && (
                 <div className="mt-3 border-t border-line pt-3">
-                  <ShareWithParents bare school={schools.find((s) => s.id === v.school_id)!} day={day} />
+                  <ShareWithParents bare place={{ name: v.location_name, slug: v.location_slug }} day={day} />
                 </div>
               )}
             </div>
@@ -339,7 +325,7 @@ export function DayCalendar({
           {rows.map((r) => (
             <li key={r.appointment_id}>
               <Link
-                to={`/officer/student/${r.student_id}?school=${school.id}&appointment=${r.appointment_id}&from=calendar&day=${day}`}
+                to={`/officer/student/${r.student_id}?appointment=${r.appointment_id}&from=calendar&day=${day}`}
                 className="flex items-center gap-3 px-4 py-3 transition hover:bg-page"
               >
                 <span className="grid h-12 w-12 shrink-0 place-items-center rounded-full bg-primary-soft text-lg font-bold text-primary">
@@ -348,7 +334,7 @@ export function DayCalendar({
                 <span className="min-w-0 flex-1">
                   <span className="block truncate font-semibold">{r.student_name}</span>
                   <span className="block truncate text-sm text-muted">
-                    {lang === 'en' ? r.type_en : r.type_ms} · {r.class_name}
+                    {lang === 'en' ? r.type_en : r.type_ms} · {r.class_name} · {r.school_name}
                   </span>
                 </span>
                 <span className="shrink-0 text-right">
@@ -378,19 +364,17 @@ type ApptType = { id: string; name_ms: string; name_en: string }
 
 /** Kalendar: the day list of booked kids, and the calendar to add and remove slots. */
 export function CalendarScreen({
-  school,
+  locations,
+  onLocationsChanged,
   initialDay,
   view,
   onView,
-  onSwitchSchool,
-  schools,
 }: {
-  school: CalSchool
-  schools: CalSchool[]
+  locations: Place[]
+  onLocationsChanged: () => Promise<Place[]>
   initialDay?: string
   view: 'list' | 'slots'
   onView: (v: 'list' | 'slots') => void
-  onSwitchSchool: (schoolId: string, day: string) => void
 }) {
   const { t } = useI18n()
   return (
@@ -408,20 +392,18 @@ export function CalendarScreen({
           </button>
         ))}
       </div>
-      {view === 'list' ? <DayCalendar school={school} schools={schools} initialDay={initialDay} onSwitchSchool={onSwitchSchool} /> : <SlotCalendar school={school} schools={schools} onSwitchSchool={onSwitchSchool} />}
+      {view === 'list' ? <DayCalendar initialDay={initialDay} /> : <SlotCalendar locations={locations} onLocationsChanged={onLocationsChanged} />}
     </div>
   )
 }
 
 /** Add and remove appointment slots on a month calendar. */
 export function SlotCalendar({
-  school,
-  schools,
-  onSwitchSchool,
+  locations,
+  onLocationsChanged,
 }: {
-  school: CalSchool
-  schools: CalSchool[]
-  onSwitchSchool: (schoolId: string, day: string) => void
+  locations: Place[]
+  onLocationsChanged: () => Promise<Place[]>
 }) {
   const { t, lang } = useI18n()
   const [month, setMonth] = useState(todayKey().slice(0, 7))
@@ -432,18 +414,16 @@ export function SlotCalendar({
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [message, setMessage] = useState<string | null>(null)
-  // Set when slots were added at a different school than the one being viewed.
-  const [movedTo, setMovedTo] = useState<string | null>(null)
-  // After slots are added: the school they are at, for the "share with parents" card.
-  const [shareFor, setShareFor] = useState<CalSchool | null>(null)
+  // After slots are added: the location they are at, for the "share with parents" card.
+  const [shareFor, setShareFor] = useState<Place | null>(null)
 
   const all = monthDays(month, '0000-01-01')
   const days = monthDays(month, todayKey())
 
   const load = useCallback(async () => {
-    const { data } = await db().rpc('officer_slots', { p_school: school.id, p_from: all[0], p_to: all[all.length - 1] })
+    const { data } = await db().rpc('officer_slots', { p_from: all[0], p_to: all[all.length - 1] })
     setSlots((data as OSlot[]) ?? [])
-  }, [school.id, month]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [month]) // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     setSlots(null)
@@ -461,6 +441,8 @@ export function SlotCalendar({
   }, [slots])
 
   const daySlots = day ? (byDay.get(day) ?? []) : []
+  // Show the location under each time only when the day has slots at more than one place.
+  const manyPlaces = new Set(daySlots.map((s) => s.location_id)).size > 1
   const chosen = daySlots.filter((s) => picked.includes(s.id))
   const toRemove = chosen.filter((s) => s.status === 'open')
   const toReopen = chosen.filter((s) => s.status === 'blocked')
@@ -516,7 +498,7 @@ export function SlotCalendar({
         {days.map((k) => {
           const selected = k === day
           const list = byDay.get(k) ?? []
-          const weekend = school.weekend_days.includes(isoWeekday(k))
+          const weekend = isoWeekday(k) >= 6
           const { weekday, day: num } = tileLabel(k, lang)
           return (
             <button
@@ -554,7 +536,7 @@ export function SlotCalendar({
         <>
           <section className="card space-y-3">
             <h3 className="text-lg font-bold">
-              {t('sl.on')} {shortDate(day, lang)} <span className="text-sm font-normal text-muted">· {school.name}</span>
+              {t('sl.on')} {shortDate(day, lang)}
             </h3>
             {slots === null && <Loading />}
             {slots && daySlots.length === 0 && <p className="text-sm text-muted">{t('sl.none')}</p>}
@@ -573,6 +555,7 @@ export function SlotCalendar({
                     }`}
                   >
                     {formatTime(s.starts_at, lang)}
+                    {manyPlaces && <span className="block truncate text-xs opacity-75">{s.location_name}</span>}
                     {(s.capacity > 1 || s.booked > 0) && !blocked && (
                       <span className="block text-xs opacity-75">
                         {s.booked}/{s.capacity}
@@ -605,32 +588,19 @@ export function SlotCalendar({
             <ErrorText code={error} />
           </section>
 
-          {shareFor && <ShareWithParents school={shareFor} day={day} />}
+          {shareFor && <ShareWithParents place={shareFor} day={day} />}
 
           <AddSlots
             key={day}
-            school={school}
-            schools={schools}
+            locations={locations}
+            onLocationsChanged={onLocationsChanged}
             day={day}
-            onAdded={(n, venue) => {
-              const elsewhere = venue.id !== school.id
-              setMovedTo(n > 0 && elsewhere ? venue.id : null)
-              setShareFor(n > 0 ? venue : null)
-              setMessage(
-                n === 0
-                  ? t('sl.addedNone')
-                  : elsewhere
-                    ? t('sl.addedAt').replace('{n}', String(n)).replace('{s}', venue.name)
-                    : t('sl.added').replace('{n}', String(n)),
-              )
+            onAdded={(n, place) => {
+              setShareFor(n > 0 ? place : null)
+              setMessage(n === 0 ? t('sl.addedNone') : t('sl.addedAt').replace('{n}', String(n)).replace('{s}', place.name))
               load()
             }}
           />
-          {message && movedTo && (
-            <button className="btn-ghost" onClick={() => onSwitchSchool(movedTo, day)}>
-              {t('dc.switch')}
-            </button>
-          )}
         </>
       )}
     </div>
@@ -638,15 +608,15 @@ export function SlotCalendar({
 }
 
 /**
- * After new slots: the parent link for that school with a ready message, to copy or send
+ * After new slots: the parent link for that location with a ready message, to copy or send
  * (WhatsApp, or the phone's own share sheet). Parents sign in and pick a time themselves.
  */
-function ShareWithParents({ school, day, bare = false }: { school: CalSchool; day: string; bare?: boolean }) {
+function ShareWithParents({ place, day, bare = false }: { place: { name: string; slug: string }; day: string; bare?: boolean }) {
   const { t, lang } = useI18n()
   const [copied, setCopied] = useState<'message' | 'link' | null>(null)
-  const link = `${location.origin}${import.meta.env.BASE_URL}#/s/${school.slug}`
+  const link = `${location.origin}${import.meta.env.BASE_URL}#/s/${place.slug}`
   const message = t('share.message')
-    .replace('{s}', school.name)
+    .replace('{s}', place.name)
     .replace('{d}', formatDate(`${day}T04:00:00Z`, lang))
     .replace('{l}', link)
 
@@ -690,25 +660,33 @@ function ShareWithParents({ school, day, bare = false }: { school: CalSchool; da
   )
 }
 
+const NEW_PLACE = '__new'
+
+/**
+ * Tambah slot: the appointment type first, then the location (Klinik Kesihatan Putrajaya P18
+ * by default). "+ Tambah lokasi baharu" adds a location on the spot.
+ */
 function AddSlots({
-  school,
-  schools,
+  locations,
+  onLocationsChanged,
   day,
   onAdded,
 }: {
-  school: CalSchool
-  schools: CalSchool[]
+  locations: Place[]
+  onLocationsChanged: () => Promise<Place[]>
   day: string
-  onAdded: (n: number, venue: CalSchool) => void
+  onAdded: (n: number, place: Place) => void
 }) {
   const { t, lang } = useI18n()
   const [types, setTypes] = useState<ApptType[]>([])
+  const [typeId, setTypeId] = useState('')
+  const [placeId, setPlaceId] = useState(() => (locations.find((l) => l.slug === 'kkp18') ?? locations[0])?.id ?? '')
+  const [newName, setNewName] = useState('')
+  const [newAddress, setNewAddress] = useState('')
   const [start, setStart] = useState('08:00')
   const [end, setEnd] = useState('11:00')
   const [minutes, setMinutes] = useState(15)
   const [capacity, setCapacity] = useState(1)
-  const [typeId, setTypeId] = useState('')
-  const [venueId, setVenueId] = useState(school.id)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
@@ -721,39 +699,83 @@ function AddSlots({
       .then(({ data }) => setTypes((data as ApptType[]) ?? []))
   }, [])
 
+  async function addPlace() {
+    setBusy(true)
+    setError(null)
+    const { data, error } = await db().rpc('add_location', { p_name: newName.trim(), p_address: newAddress.trim() || null })
+    if (error) {
+      setBusy(false)
+      return setError(errorCode(error))
+    }
+    await onLocationsChanged()
+    setPlaceId((data as { id: string }).id)
+    setNewName('')
+    setNewAddress('')
+    setBusy(false)
+  }
+
   async function submit(e: FormEvent) {
     e.preventDefault()
     setError(null)
+    if (placeId === NEW_PLACE) return setError('bad_location')
     if (end <= start) return setError('bad_time')
     setBusy(true)
     const { data, error } = await db().rpc('add_slots', {
-      p_school: venueId,
+      p_location: placeId,
+      p_type: typeId || null,
       p_date: day,
       p_start: start,
       p_end: end,
       p_minutes: minutes,
       p_capacity: capacity,
-      p_type: typeId || null,
     })
     setBusy(false)
     if (error) return setError(errorCode(error))
-    onAdded(data as number, schools.find((x) => x.id === venueId) ?? school)
+    const place = locations.find((l) => l.id === placeId)
+    if (place) onAdded(data as number, place)
   }
 
   return (
     <form onSubmit={submit} className="card grid gap-3 sm:grid-cols-2">
       <h3 className="text-lg font-bold sm:col-span-2">{t('sl.addTitle')}</h3>
       <label className="block sm:col-span-2">
-        <span className="label">{t('sl.venue')}</span>
-        <select className="field" value={venueId} onChange={(e) => setVenueId(e.target.value)}>
-          {schools.map((sc) => (
-            <option key={sc.id} value={sc.id}>
-              {sc.name}
+        <span className="label">{t('sl.type')}</span>
+        <select className="field" value={typeId} onChange={(e) => setTypeId(e.target.value)}>
+          <option value="">{t('cal.anyType')}</option>
+          {types.map((ty) => (
+            <option key={ty.id} value={ty.id}>
+              {lang === 'en' ? ty.name_en : ty.name_ms}
             </option>
           ))}
         </select>
+      </label>
+      <label className="block sm:col-span-2">
+        <span className="label">{t('sl.venue')}</span>
+        <select className="field" value={placeId} onChange={(e) => setPlaceId(e.target.value)}>
+          {locations.map((l) => (
+            <option key={l.id} value={l.id}>
+              {l.name}
+            </option>
+          ))}
+          <option value={NEW_PLACE}>{t('loc.addOption')}</option>
+        </select>
         <span className="mt-1 block text-xs text-muted">{t('sl.venueHint')}</span>
       </label>
+      {placeId === NEW_PLACE && (
+        <div className="space-y-3 rounded-2xl bg-page p-3 sm:col-span-2">
+          <label className="block">
+            <span className="label">{t('loc.name')}</span>
+            <input className="field" required minLength={3} maxLength={120} placeholder={t('loc.namePlaceholder')} value={newName} onChange={(e) => setNewName(e.target.value)} />
+          </label>
+          <label className="block">
+            <span className="label">{t('loc.address')}</span>
+            <input className="field" maxLength={200} value={newAddress} onChange={(e) => setNewAddress(e.target.value)} />
+          </label>
+          <button type="button" className="btn-ghost" disabled={busy || newName.trim().length < 3} onClick={addPlace}>
+            {t('loc.save')}
+          </button>
+        </div>
+      )}
       <label className="block">
         <span className="label">{t('cal.start')}</span>
         <input className="field" type="time" required value={start} onChange={(e) => setStart(e.target.value)} />
@@ -776,20 +798,9 @@ function AddSlots({
         <span className="label">{t('cal.capacity')}</span>
         <input className="field" type="number" min={1} max={100} required value={capacity} onChange={(e) => setCapacity(Number(e.target.value))} />
       </label>
-      <label className="block sm:col-span-2">
-        <span className="label">{t('sl.type')}</span>
-        <select className="field" value={typeId} onChange={(e) => setTypeId(e.target.value)}>
-          <option value="">{t('cal.anyType')}</option>
-          {types.map((ty) => (
-            <option key={ty.id} value={ty.id}>
-              {lang === 'en' ? ty.name_en : ty.name_ms}
-            </option>
-          ))}
-        </select>
-      </label>
       <div className="sm:col-span-2">
         <ErrorText code={error} />
-        <button className="btn-primary mt-2" disabled={busy}>
+        <button className="btn-primary mt-2" disabled={busy || placeId === NEW_PLACE}>
           <Icon name="slots" className="mr-2 h-5 w-5" />
           {t('sl.add')}
         </button>

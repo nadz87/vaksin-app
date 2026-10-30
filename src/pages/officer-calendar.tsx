@@ -5,7 +5,8 @@ import { useI18n } from '../lib/i18n'
 import { addDays, isoWeekday, shortDate, todayKey, weekdayName } from '../lib/time'
 import { ErrorText, Loading } from '../components/Layout'
 
-export type CalSchool = { id: string; name: string; weekend_days: number[]; slug: string }
+/** A clinic location where slots are held (Klinik Kesihatan Putrajaya P18 by default). */
+export type Place = { id: string; name: string; slug: string; weekend_days: number[]; address: string | null }
 
 type Rule = {
   id: string
@@ -15,13 +16,14 @@ type Rule = {
   slot_minutes: number
   capacity: number
   appointment_type_ids: string[]
+  location_id: string
 }
 type ApptType = { id: string; name_ms: string; name_en: string }
 type Closure = { id: string; date: string; reason: string | null }
 
 // ----------------------------------------------------------- Weekly schedule
 
-export function ScheduleTab({ school }: { school: CalSchool }) {
+export function ScheduleTab({ locations }: { locations: Place[] }) {
   const { t, lang } = useI18n()
   const { profile } = useAuth()
   const [rules, setRules] = useState<Rule[] | null>(null)
@@ -35,22 +37,23 @@ export function ScheduleTab({ school }: { school: CalSchool }) {
   const [error, setError] = useState<string | null>(null)
   const [message, setMessage] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
+  const [placeId, setPlaceId] = useState(() => (locations.find((l) => l.slug === 'kkp18') ?? locations[0])?.id ?? '')
+  const place = locations.find((l) => l.id === placeId)
 
-  const workDays = [1, 2, 3, 4, 5, 6, 7].filter((d) => !school.weekend_days.includes(d))
+  const workDays = [1, 2, 3, 4, 5, 6, 7].filter((d) => !(place?.weekend_days ?? [6, 7]).includes(d))
 
   const load = useCallback(async () => {
     const [r, ty] = await Promise.all([
       db()
         .from('availability_rules')
-        .select('id, weekday, start_time, end_time, slot_minutes, capacity, appointment_type_ids')
-        .eq('school_id', school.id)
+        .select('id, weekday, start_time, end_time, slot_minutes, capacity, appointment_type_ids, location_id')
         .order('weekday')
         .order('start_time'),
       db().from('appointment_types').select('id, name_ms, name_en').eq('active', true).order('sort_order'),
     ])
     setRules((r.data as Rule[]) ?? [])
     setTypes((ty.data as ApptType[]) ?? [])
-  }, [school.id])
+  }, [])
 
   useEffect(() => {
     load()
@@ -58,7 +61,7 @@ export function ScheduleTab({ school }: { school: CalSchool }) {
 
   useEffect(() => {
     if (!workDays.includes(weekday)) setWeekday(workDays[0] ?? 1)
-  }, [school.id]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [placeId]) // eslint-disable-line react-hooks/exhaustive-deps
 
   async function addRule(e: FormEvent) {
     e.preventDefault()
@@ -67,7 +70,7 @@ export function ScheduleTab({ school }: { school: CalSchool }) {
     if (endTime <= startTime) return setError('bad_time')
     const { error } = await db().from('availability_rules').insert({
       officer_id: profile!.user_id,
-      school_id: school.id,
+      location_id: placeId,
       weekday,
       start_time: startTime,
       end_time: endTime,
@@ -111,6 +114,7 @@ export function ScheduleTab({ school }: { school: CalSchool }) {
               <span>
                 <strong>{weekdayName(r.weekday, lang)}</strong> {r.start_time.slice(0, 5)}–{r.end_time.slice(0, 5)} · {r.slot_minutes} min ·{' '}
                 {r.capacity}×
+                <span className="block text-muted">{locations.find((l) => l.id === r.location_id)?.name}</span>
                 <span className="block text-muted">
                   {r.appointment_type_ids.length === 0 ? t('cal.anyType') : r.appointment_type_ids.map(typeName).join(', ')}
                 </span>
@@ -130,6 +134,16 @@ export function ScheduleTab({ school }: { school: CalSchool }) {
 
       <form onSubmit={addRule} className="card grid gap-3 sm:grid-cols-2">
         <h2 className="text-lg font-bold sm:col-span-2">{t('cal.addRule')}</h2>
+        <label className="block sm:col-span-2">
+          <span className="label">{t('sl.venue')}</span>
+          <select className="field" value={placeId} onChange={(e) => setPlaceId(e.target.value)}>
+            {locations.map((l) => (
+              <option key={l.id} value={l.id}>
+                {l.name}
+              </option>
+            ))}
+          </select>
+        </label>
         <label className="block">
           <span className="label">{t('cal.weekday')}</span>
           <select className="field" value={weekday} onChange={(e) => setWeekday(Number(e.target.value))}>
@@ -192,7 +206,8 @@ export function ScheduleTab({ school }: { school: CalSchool }) {
 
 // ------------------------------------------------------------------ Closures
 
-export function ClosuresTab({ school }: { school: CalSchool }) {
+/** Days off: the officer's open slots on that day are blocked and any bookings cancelled. */
+export function ClosuresTab() {
   const { t, lang } = useI18n()
   const [closures, setClosures] = useState<Closure[] | null>(null)
   const [date, setDate] = useState(addDays(todayKey(), 1))
@@ -204,11 +219,10 @@ export function ClosuresTab({ school }: { school: CalSchool }) {
     const { data } = await db()
       .from('closures')
       .select('id, date, reason')
-      .eq('school_id', school.id)
       .gte('date', todayKey())
       .order('date')
     setClosures((data as Closure[]) ?? [])
-  }, [school.id])
+  }, [])
 
   useEffect(() => {
     load()
@@ -218,7 +232,7 @@ export function ClosuresTab({ school }: { school: CalSchool }) {
     e.preventDefault()
     setError(null)
     setMessage(null)
-    const { data, error } = await db().rpc('add_closure', { p_school: school.id, p_date: date, p_reason: reason })
+    const { data, error } = await db().rpc('add_closure', { p_date: date, p_reason: reason })
     if (error) return setError(errorCode(error))
     setMessage(t('cal.closureAdded').replace('{n}', String(data as number)))
     setReason('')

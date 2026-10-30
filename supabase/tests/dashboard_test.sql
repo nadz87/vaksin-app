@@ -31,8 +31,8 @@ insert into public.student_guardians (student_id, guardian_id, relationship, con
   ('a0000000-0000-0000-0000-00000000000a', '00000000-0000-0000-0000-0000000000a7', 'mother', now() - interval '2 days'),
   ('a0000000-0000-0000-0000-00000000000a', '00000000-0000-0000-0000-0000000000a8', 'father', now() - interval '1 day');
 
-insert into public.slots (id, officer_id, school_id, starts_at, ends_at, capacity) values
-  ('b0000000-0000-0000-0000-00000000000a', '00000000-0000-0000-0000-0000000000c7', '90000000-0000-0000-0000-00000000000a',
+insert into public.slots (id, officer_id, location_id, starts_at, ends_at, capacity) values
+  ('b0000000-0000-0000-0000-00000000000a', '00000000-0000-0000-0000-0000000000c7', (select id from public.locations where slug = 'kkp18'),
    now() + interval '3 days', now() + interval '3 days 15 minutes', 1);
 insert into public.appointments (slot_id, student_id, type_id, booked_by, reason_note)
 select 'b0000000-0000-0000-0000-00000000000a', 'a0000000-0000-0000-0000-00000000000a', t.id,
@@ -45,16 +45,16 @@ create function pg_temp.act_as(p_user uuid, p_aal text default 'aal2') returns v
            json_build_object('sub', p_user, 'role', 'authenticated', 'aal', p_aal)::text, true);
 $$;
 
--- Officer of school A -----------------------------------------------------
+-- Officer c7 has the child booked in one of their slots --------------------
 select pg_temp.act_as('00000000-0000-0000-0000-0000000000c7');
 
-select is((select count(*) from public.officer_students('90000000-0000-0000-0000-00000000000a'))::int, 1,
-  'officer sees the school''s student list');
+select is((select count(*) from public.officer_students())::int, 1,
+  'officer sees the children booked into their slots');
 
-select is((select parent_name from public.officer_students('90000000-0000-0000-0000-00000000000a')),
+select is((select parent_name from public.officer_students()),
   'Puan Satu', 'the list shows the first parent');
 
-select is((select upcoming from public.officer_students('90000000-0000-0000-0000-00000000000a')), 1,
+select is((select upcoming from public.officer_students()), 1,
   'the list counts upcoming bookings');
 
 select is(
@@ -72,33 +72,33 @@ select is(
 select is((select count(*) from public.audit_log where action = 'view_profile')::int, 3,
   'each profile view is logged');
 
-select is((select count(*) from public.export_students('90000000-0000-0000-0000-00000000000a', false) where mykid is null)::int, 1,
+select is((select count(*) from public.export_students(false) where mykid is null)::int, 1,
   'the student export leaves the MyKid out by default');
 
-select is((select mykid from public.export_students('90000000-0000-0000-0000-00000000000a', true)),
+select is((select mykid from public.export_students(true)),
   '160101101231', 'the full MyKid is included only when asked for');
 
 select is((select count(*) from public.audit_log where action = 'export_students' and (meta ->> 'include_mykid')::boolean)::int, 1,
   'an export with the MyKid is logged as such');
 
-select is((select count(*) from public.export_appointments('90000000-0000-0000-0000-00000000000a', current_date - 1, current_date + 30))::int, 1,
+select is((select count(*) from public.export_appointments(current_date - 1, current_date + 30))::int, 1,
   'the appointment export lists the booking');
 
 -- Everyone else -----------------------------------------------------------
 select pg_temp.act_as('00000000-0000-0000-0000-0000000000c8');
 select throws_ok(
   $$ select public.officer_student_profile('a0000000-0000-0000-0000-00000000000a') $$,
-  'not_allowed', 'an officer of another school cannot open the profile');
+  'not_allowed', 'an officer the child has not booked with cannot open the profile');
 
 select pg_temp.act_as('00000000-0000-0000-0000-0000000000a7');
 select throws_ok(
-  $$ select * from public.export_students('90000000-0000-0000-0000-00000000000a', true) $$,
+  $$ select * from public.export_students(true) $$,
   'not_allowed', 'a parent cannot export');
 
 select pg_temp.act_as('00000000-0000-0000-0000-0000000000c7', 'aal1');
 select throws_ok(
-  $$ select * from public.officer_students('90000000-0000-0000-0000-00000000000a') $$,
-  'not_allowed', 'an officer without 2-step verification sees nothing');
+  $$ select * from public.officer_students() $$,
+  'not_allowed', 'an officer token without staff level sees nothing');
 
 select * from finish();
 rollback;

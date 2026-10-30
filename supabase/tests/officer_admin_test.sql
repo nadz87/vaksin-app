@@ -1,7 +1,7 @@
 -- Vaksin App: the platform admin manages health officers (admin page).
 begin;
 create extension if not exists pgtap with schema extensions;
-select plan(27);
+select plan(24);
 
 -- Fixtures ----------------------------------------------------------------
 insert into auth.users (id, email) values
@@ -56,62 +56,57 @@ select results_eq(
 select is((select count(*)::int from public.audit_log where action = 'invite_officer'), 2, 'both invitations are audit-logged');
 select is((select password_hash from auth.users where email = 'new.officer@oa.test'), null, 'officers get no password');
 
--- Listing, schools ----------------------------------------------------------
+-- Listing ---------------------------------------------------------------------
 select pg_temp.act_as('00000000-0000-0000-0000-0000000000d4');
 select is((select count(*)::int from public.admin_officers()), 2, 'admin sees both officers');
 select results_eq(
-  $$ select active, two_step, schools from public.admin_officers() where email = 'new.officer@oa.test' $$,
-  $$ values (true, false, '[]'::jsonb) $$,
-  'new officer: active, 2-step not set up, no schools');
--- Officers choose their own schools -----------------------------------------
-select pg_temp.act_as(pg_temp.officer_id('new.officer@oa.test'), 'aal1');
-select throws_ok($$ select public.officer_join_school('90000000-0000-0000-0000-0000000000a4') $$,
-  'not_allowed', 'an officer without 2-step cannot choose schools');
+  $$ select active, locations from public.admin_officers() where email = 'new.officer@oa.test' $$,
+  $$ values (true, '[]'::jsonb) $$,
+  'new officer: active, no slots at any location yet');
+
+-- Locations: officers add them ---------------------------------------------------
+select pg_temp.act_as(pg_temp.officer_id('new.officer@oa.test'));
+select is(public.add_location('Klinik Ujian Presint 9', 'Jalan Ujian') ->> 'slug', 'klinik-ujian-presint-9',
+  'an officer adds a location; its link name comes from the name');
+select public.add_location('klinik ujian presint 9', null);
+select is((select count(*)::int from public.locations where lower(name) = 'klinik ujian presint 9'), 1,
+  'adding the same name again does not make a second location');
+
 select pg_temp.act_as('00000000-0000-0000-0000-0000000000a4');
-select throws_ok($$ select public.officer_join_school('90000000-0000-0000-0000-0000000000a4') $$,
-  'not_allowed', 'a parent cannot choose officer schools');
+select throws_ok($$ select public.add_location('Klinik Ibu Bapa', null) $$, 'not_allowed', 'a parent cannot add locations');
+select pg_temp.act_as(pg_temp.officer_id('new.officer@oa.test'), 'aal1');
+select throws_ok($$ select public.add_location('Klinik Lain', null) $$, 'not_allowed',
+  'an officer token without staff level cannot add locations');
+
+-- An officer sees a child only once the child has booked one of their slots ------------
+reset role;
+insert into public.slots (id, officer_id, location_id, starts_at, ends_at, capacity) values
+  ('b0000000-0000-0000-0000-0000000000a4', pg_temp.officer_id('new.officer@oa.test'), (select id from public.locations where slug = 'kkp18'),
+   now() + interval '2 days', now() + interval '2 days 15 minutes', 1);
 
 select pg_temp.act_as(pg_temp.officer_id('new.officer@oa.test'));
-select public.officer_join_school('90000000-0000-0000-0000-0000000000a4');
-select pg_temp.act_as('00000000-0000-0000-0000-0000000000d4');
-select is((select jsonb_array_length(schools) from public.admin_officers() where email = 'new.officer@oa.test'), 1,
-  'the school the officer chose shows on the admin page');
+select is((select count(*)::int from public.students where id = 'a0000000-0000-0000-0000-0000000000a4'), 0,
+  'before any booking the officer cannot see the child');
 
--- A booked child at that school: leaving is refused until the booking is gone.
 reset role;
-insert into public.slots (id, officer_id, school_id, starts_at, ends_at, capacity) values
-  ('b0000000-0000-0000-0000-0000000000a4', pg_temp.officer_id('new.officer@oa.test'), '90000000-0000-0000-0000-0000000000a4',
-   now() + interval '2 days', now() + interval '2 days 15 minutes', 1),
-  ('b0000000-0000-0000-0000-0000000000a5', pg_temp.officer_id('new.officer@oa.test'), '90000000-0000-0000-0000-0000000000a4',
-   now() + interval '3 days', now() + interval '3 days 15 minutes', 1);
 insert into public.appointments (id, slot_id, student_id, type_id, booked_by)
 select 'c0000000-0000-0000-0000-0000000000a4', 'b0000000-0000-0000-0000-0000000000a4', 'a0000000-0000-0000-0000-0000000000a4',
        t.id, '00000000-0000-0000-0000-0000000000a4'
   from public.appointment_types t where t.code = 'screening';
 
 select pg_temp.act_as(pg_temp.officer_id('new.officer@oa.test'));
-select throws_ok($$ select public.officer_leave_school('90000000-0000-0000-0000-0000000000a4') $$,
-  'school_has_bookings', 'cannot leave a school while a child has an upcoming appointment there');
-
-reset role;
-update public.appointments set status = 'cancelled' where id = 'c0000000-0000-0000-0000-0000000000a4';
-select pg_temp.act_as(pg_temp.officer_id('new.officer@oa.test'));
-select public.officer_leave_school('90000000-0000-0000-0000-0000000000a4');
-reset role;
-select is((select count(*)::int from public.officer_schools where officer_id = pg_temp.officer_id('new.officer@oa.test')), 0,
-  'after the booking is cancelled the officer can leave');
-select is((select count(*)::int from public.slots where id = 'b0000000-0000-0000-0000-0000000000a5'), 0,
-  'leaving deletes unused future slots');
-select is((select status::text from public.slots where id = 'b0000000-0000-0000-0000-0000000000a4'), 'blocked',
-  'a future slot with past (cancelled) bookings is blocked, so parents cannot book it');
-
--- Disable / enable, reset 2-step ------------------------------------------------
-reset role;
-insert into auth_private.sessions (user_id, expires_at) values (pg_temp.officer_id('new.officer@oa.test'), now() + interval '1 hour');
-insert into auth_private.mfa_factors (user_id, secret_enc, verified_at) values (pg_temp.officer_id('new.officer@oa.test'), '\x00', now());
+select is((select count(*)::int from public.students where id = 'a0000000-0000-0000-0000-0000000000a4'), 1,
+  'after the child books the officer''s slot, the officer sees the child');
 
 select pg_temp.act_as('00000000-0000-0000-0000-0000000000d4');
-select is((select two_step from public.admin_officers() where email = 'new.officer@oa.test'), true, 'finished 2-step shows as on');
+select is((select locations -> 0 ->> 'name' from public.admin_officers() where email = 'new.officer@oa.test'),
+  'Klinik Kesihatan Putrajaya P18', 'the admin page shows the location the officer runs slots at');
+
+-- Disable / enable ---------------------------------------------------------------
+reset role;
+insert into auth_private.sessions (user_id, expires_at) values (pg_temp.officer_id('new.officer@oa.test'), now() + interval '1 hour');
+
+select pg_temp.act_as('00000000-0000-0000-0000-0000000000d4');
 select public.admin_set_officer_active(pg_temp.officer_id('new.officer@oa.test'), false);
 select is((select active from public.admin_officers() where email = 'new.officer@oa.test'), false, 'officer disabled');
 reset role;
@@ -121,13 +116,8 @@ select is((select count(*)::int from auth_private.sessions where user_id = pg_te
 select pg_temp.act_as('00000000-0000-0000-0000-0000000000d4');
 select public.admin_set_officer_active(pg_temp.officer_id('new.officer@oa.test'), true);
 select is((select active from public.admin_officers() where email = 'new.officer@oa.test'), true, 'officer enabled again');
-select public.admin_reset_officer_two_step(pg_temp.officer_id('new.officer@oa.test'));
-select is((select two_step from public.admin_officers() where email = 'new.officer@oa.test'), false, '2-step reset');
-
 select throws_ok($$ select public.admin_set_officer_active('00000000-0000-0000-0000-0000000000d4', false) $$,
   'not_officer', 'the admin page cannot disable an admin');
-select throws_ok($$ select public.admin_reset_officer_two_step('00000000-0000-0000-0000-0000000000a4') $$,
-  'not_officer', 'the admin page cannot reset a parent');
 
 select * from finish();
 rollback;

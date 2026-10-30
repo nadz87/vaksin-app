@@ -3,7 +3,9 @@ begin;
 create extension if not exists pgtap with schema extensions;
 select plan(13);
 
--- Fixtures (as postgres, bypassing RLS) -----------------------------------
+-- Fixtures (as postgres, bypassing RLS). Slots are at KK Putrajaya P18; booking limits
+-- follow the child's school settings. Parents no longer join schools; the parent_schools
+-- rows below are left in place but no longer matter.
 insert into auth.users (id, email) values
   ('00000000-0000-0000-0000-0000000000a2', 'parent.a@book.test'),
   ('00000000-0000-0000-0000-0000000000b2', 'parent.b@book.test'),
@@ -26,12 +28,12 @@ insert into public.student_guardians (student_id, guardian_id) values
 
 -- s1: in 3 days, 1 place, any type   s2: in 3 hours (inside 24h cancel cutoff)
 -- s3: in 4 days, vaccination only, 10 places
-insert into public.slots (id, officer_id, school_id, starts_at, ends_at, capacity, appointment_type_id) values
-  ('40000000-0000-0000-0000-000000000001', '00000000-0000-0000-0000-0000000000c2', '20000000-0000-0000-0000-000000000001',
+insert into public.slots (id, officer_id, location_id, starts_at, ends_at, capacity, appointment_type_id) values
+  ('40000000-0000-0000-0000-000000000001', '00000000-0000-0000-0000-0000000000c2', (select id from public.locations where slug = 'kkp18'),
    now() + interval '3 days', now() + interval '3 days 15 minutes', 1, null),
-  ('40000000-0000-0000-0000-000000000002', '00000000-0000-0000-0000-0000000000c2', '20000000-0000-0000-0000-000000000001',
+  ('40000000-0000-0000-0000-000000000002', '00000000-0000-0000-0000-0000000000c2', (select id from public.locations where slug = 'kkp18'),
    now() + interval '3 hours', now() + interval '3 hours 15 minutes', 1, null),
-  ('40000000-0000-0000-0000-000000000003', '00000000-0000-0000-0000-0000000000c2', '20000000-0000-0000-0000-000000000001',
+  ('40000000-0000-0000-0000-000000000003', '00000000-0000-0000-0000-0000000000c2', (select id from public.locations where slug = 'kkp18'),
    now() + interval '4 days', now() + interval '4 days 30 minutes', 10,
    (select id from public.appointment_types where code = 'vaccination'));
 
@@ -46,7 +48,7 @@ $$;
 -- Parent A -----------------------------------------------------------------
 select pg_temp.act_as('00000000-0000-0000-0000-0000000000a2');
 
-select is((select count(*) from public.available_slots('20000000-0000-0000-0000-000000000001'))::int, 3,
+select is((select count(*) from public.available_slots('30000000-0000-0000-0000-00000000000a'))::int, 3,
   'parent sees the 3 open slots');
 
 select lives_ok(
@@ -88,7 +90,7 @@ select is((select count(*) from public.my_appointments())::int, 2, 'parent A see
 -- Parent B -----------------------------------------------------------------
 select pg_temp.act_as('00000000-0000-0000-0000-0000000000b2');
 
-select is((select count(*) from public.available_slots('20000000-0000-0000-0000-000000000001'))::int, 1,
+select is((select count(*) from public.available_slots('30000000-0000-0000-0000-00000000000b'))::int, 1,
   'full slots (s1, s2) disappear for other parents');
 
 select throws_ok(

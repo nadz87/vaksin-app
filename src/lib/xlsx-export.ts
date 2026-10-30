@@ -33,6 +33,8 @@ export type StudentRow = {
 
 export type AppointmentRow = {
   starts_at: string
+  location_name: string
+  school_name: string
   student_no: string
   student_name: string
   class_name: string
@@ -99,9 +101,11 @@ const STUDENT_COLS: Col[] = [
 const APPT_COLS: Col[] = [
   { key: 'date', ms: 'Tarikh', en: 'Date', width: 12, fmt: 'dd/mm/yyyy' },
   { key: 'time', ms: 'Masa', en: 'Time', width: 8 },
+  { key: 'location', ms: 'Lokasi', en: 'Location', width: 28 },
   { key: 'student_no', ms: 'ID murid', en: 'Child ID', width: 15 },
   { key: 'student', ms: 'Nama murid', en: 'Child name', width: 28 },
   { key: 'class_name', ms: 'Kelas', en: 'Class', width: 12 },
+  { key: 'school', ms: 'Sekolah', en: 'School', width: 28 },
   { key: 'type', ms: 'Jenis temujanji', en: 'Appointment type', width: 20 },
   { key: 'status', ms: 'Status', en: 'Status', width: 13 },
   { key: 'note', ms: 'Catatan ibu bapa', en: 'Parent note', width: 30 },
@@ -178,9 +182,11 @@ export async function buildWorkbook(o: {
       ws.addRow({
         date: dateOnly(dayKey(a.starts_at)),
         time: time24(a.starts_at),
+        location: a.location_name,
         student_no: a.student_no,
         student: a.student_name,
         class_name: a.class_name,
+        school: a.school_name,
         type: lang === 'ms' ? a.type_ms : a.type_en,
         status: a.status in STATUS ? STATUS[a.status as keyof typeof STATUS][lang] : a.status,
         note: a.note ?? '',
