@@ -6,7 +6,6 @@ import { displayMyPhone, normalizeMyPhone } from '../lib/phone'
 import { dayKey, formatDate, formatTime } from '../lib/time'
 import type { Place } from '../lib/places'
 import { ErrorText, Loading } from '../components/Layout'
-import { Icon } from '../components/icons'
 import { RemoveButton } from '../components/RemoveButton'
 import { TypeIcon } from '../components/TypeIcon'
 import { ExportTab } from './officer-students'
@@ -200,7 +199,7 @@ function TypesTab() {
   const { t, lang } = useI18n()
   const [types, setTypes] = useState<TypeRow[] | null>(null)
   const [slots, setSlots] = useState<UpSlot[]>([])
-  const [open, setOpen] = useState<string | null>(null)
+  const [slotMessage, setSlotMessage] = useState<string | null>(null)
   const [name, setName] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -242,7 +241,7 @@ function TypesTab() {
     const { data, error } = await db().rpc('remove_slots', { p_ids: ids, p_reason: null })
     if (error) return errorCode(error)
     const r = data as SlotRemoval
-    setMessage(t('sl.removedMsg').replace('{d}', String(r.deleted)).replace('{b}', String(r.blocked)).replace('{c}', String(r.cancelled)))
+    setSlotMessage(t('sl.removedMsg').replace('{d}', String(r.deleted)).replace('{b}', String(r.blocked)).replace('{c}', String(r.cancelled)))
     await load()
     return null
   }
@@ -256,34 +255,26 @@ function TypesTab() {
         <p className="text-sm text-muted">{t('type.body')}</p>
         {message && <p className="text-sm font-medium text-success">{message}</p>}
         <ul className="divide-y divide-line">
-          {types.map((x) => {
-            const mine = slots.filter((s) => s.appointment_type_id === x.id)
-            const shown = open === x.id && mine.length > 0
-            return (
-              <li key={x.id} className="py-2">
-                <div className="flex flex-wrap items-center gap-3">
-                  <TypeIcon name={x.icon} color={x.color} />
-                  <button
-                    type="button"
-                    className="min-w-0 flex-1 text-left disabled:cursor-default"
-                    disabled={mine.length === 0}
-                    aria-expanded={shown}
-                    onClick={() => setOpen(shown ? null : x.id)}
-                  >
-                    <span className="block font-medium">{lang === 'en' ? x.name_en : x.name_ms}</span>
-                    <span className={`flex items-center gap-1 text-sm ${mine.length > 0 ? 'text-primary' : 'text-muted'}`}>
-                      {mine.length > 0 ? t('type.slotCount').replace('{n}', String(mine.length)) : t('type.noSlots')}
-                      {mine.length > 0 && <Icon name="right" className={`h-4 w-4 transition ${shown ? 'rotate-90' : ''}`} />}
-                    </span>
-                  </button>
-                  <RemoveButton label={t('type.remove')} confirmText={t('type.removeConfirm').replace('{s}', x.name_ms)} onRemove={() => remove(x)} />
-                </div>
-                {shown && <TypeSlots key={mine.map((s) => s.id).join()} slots={mine} onRemove={removeSlots} />}
-              </li>
-            )
-          })}
+          {types.map((x) => (
+            <li key={x.id} className="flex flex-wrap items-center gap-3 py-2">
+              <TypeIcon name={x.icon} color={x.color} />
+              <p className="min-w-0 flex-1 font-medium">{lang === 'en' ? x.name_en : x.name_ms}</p>
+              <RemoveButton label={t('type.remove')} confirmText={t('type.removeConfirm').replace('{s}', x.name_ms)} onRemove={() => remove(x)} />
+            </li>
+          ))}
         </ul>
       </section>
+
+      <CreatedSlots
+        key={slots.map((s) => s.id).join()}
+        slots={slots}
+        typeName={(id) => {
+          const x = types.find((y) => y.id === id)
+          return x ? (lang === 'en' ? x.name_en : x.name_ms) : ''
+        }}
+        message={slotMessage}
+        onRemove={removeSlots}
+      />
 
       <form onSubmit={add} className="card space-y-3">
         <h3 className="font-semibold">{t('type.addTitle')}</h3>
@@ -301,8 +292,18 @@ function TypesTab() {
   )
 }
 
-/** One type's upcoming slots by date: tick slots (or a whole date) to remove them, or use a date's trash. */
-function TypeSlots({ slots, onRemove }: { slots: UpSlot[]; onRemove: (ids: string[]) => Promise<string | null> }) {
+/** Every upcoming slot the officer created, by date: tick slots (or a whole date) to remove them, or use a date's trash. */
+function CreatedSlots({
+  slots,
+  typeName,
+  message,
+  onRemove,
+}: {
+  slots: UpSlot[]
+  typeName: (id: string) => string
+  message: string | null
+  onRemove: (ids: string[]) => Promise<string | null>
+}) {
   const { t, lang } = useI18n()
   const [picked, setPicked] = useState<string[]>([])
 
@@ -327,7 +328,12 @@ function TypeSlots({ slots, onRemove }: { slots: UpSlot[]; onRemove: (ids: strin
   }
 
   return (
-    <div className="mt-3 space-y-4 rounded-2xl bg-page p-3">
+    <section className="card space-y-4">
+      <div>
+        <h2 className="text-lg font-bold">{t('cs.title')}</h2>
+        <p className="text-sm text-muted">{slots.length > 0 ? t('cs.body') : t('cs.none')}</p>
+      </div>
+      {message && <p className="text-sm font-medium text-success">{message}</p>}
       {days.map(([k, list]) => (
         <div key={k}>
           <div className="flex flex-wrap items-center gap-2">
@@ -360,7 +366,9 @@ function TypeSlots({ slots, onRemove }: { slots: UpSlot[]; onRemove: (ids: strin
                     <span className="block font-medium">
                       {t('type.timeRange').replace('{a}', formatTime(s.starts_at, lang)).replace('{b}', formatTime(s.ends_at, lang))}
                     </span>
-                    <span className="block truncate text-muted">{s.location_name}</span>
+                    <span className="block truncate text-muted">
+                      {typeName(s.appointment_type_id)} · {s.location_name}
+                    </span>
                   </span>
                   <span className={`shrink-0 ${s.booked > 0 ? 'font-medium text-primary' : 'text-muted'}`}>
                     {t('type.booked').replace('{b}', String(s.booked)).replace('{c}', String(s.capacity))}
@@ -378,6 +386,6 @@ function TypeSlots({ slots, onRemove }: { slots: UpSlot[]; onRemove: (ids: strin
           </RemoveButton>
         </div>
       )}
-    </div>
+    </section>
   )
 }
