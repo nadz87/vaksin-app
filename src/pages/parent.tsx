@@ -36,7 +36,8 @@ export function Welcome() {
  */
 export function ClinicLanding() {
   const { slug = '' } = useParams()
-  const { session, loading } = useAuth()
+  const { t } = useI18n()
+  const { session, profile, loading, signOut } = useAuth()
   const [place, setPlace] = useState<Place | null | undefined>(undefined)
 
   useEffect(() => {
@@ -47,14 +48,28 @@ export function ClinicLanding() {
       .then(({ data }) => setPlace((data as Place[] | null)?.[0] ?? null))
   }, [slug])
 
-  if (loading || place === undefined) return <Loading />
-  if (session || place === null) return <Navigate to="/" replace />
+  if (loading || place === undefined || (session && !profile)) return <Loading />
+  if (place === null) return <Navigate to="/" replace />
+  // A staff account on this browser would otherwise be sent to its own page without a word.
+  const staff = profile && profile.role !== 'parent'
+  if (session && !staff) return <Navigate to="/" replace />
 
   return (
     <div className="space-y-4">
       <PlaceBadge place={place} />
       <Centered>
-        <EmailSignIn />
+        {staff ? (
+          <>
+            <p className="text-sm text-muted">
+              {t(profile.role === 'platform_admin' ? 'clinic.signedInAdmin' : 'clinic.signedInOfficer').replace('{e}', session?.user.email ?? '')}
+            </p>
+            <button className="btn-primary" onClick={() => signOut()}>
+              {t('signout')}
+            </button>
+          </>
+        ) : (
+          <EmailSignIn />
+        )}
       </Centered>
     </div>
   )
