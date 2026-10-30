@@ -3,7 +3,7 @@ import { db, errorCode } from '../lib/api'
 import { useAuth } from '../lib/auth'
 import { useI18n } from '../lib/i18n'
 import { displayMyPhone, normalizeMyPhone } from '../lib/phone'
-import { dayKey, formatDate, formatTime } from '../lib/time'
+import { dayKey, formatDate } from '../lib/time'
 import type { Place } from '../lib/places'
 import { ErrorText, Loading } from '../components/Layout'
 import { RemoveButton } from '../components/RemoveButton'
@@ -191,7 +191,7 @@ function Locations({ locations, onChanged }: { locations: Place[]; onChanged: ()
 }
 
 type TypeRow = { id: string; name_ms: string; name_en: string; icon: string; color: string }
-type UpSlot = { id: string; starts_at: string; ends_at: string; capacity: number; appointment_type_id: string; location_name: string; booked: number }
+type UpSlot = { id: string; starts_at: string; booked: number }
 type SlotRemoval = { deleted: number; blocked: number; cancelled: number }
 
 /** Jenis temujanji: the list parents choose from (shared by every officer), and each type's upcoming slots. */
@@ -268,10 +268,6 @@ function TypesTab() {
       <CreatedSlots
         key={slots.map((s) => s.id).join()}
         slots={slots}
-        typeName={(id) => {
-          const x = types.find((y) => y.id === id)
-          return x ? (lang === 'en' ? x.name_en : x.name_ms) : ''
-        }}
         message={slotMessage}
         onRemove={removeSlots}
       />
@@ -292,15 +288,13 @@ function TypesTab() {
   )
 }
 
-/** Every upcoming slot the officer created, by date: tick slots (or a whole date) to remove them, or use a date's trash. */
+/** The dates that have the officer's upcoming slots: remove a whole day with its trash, or tick several days. */
 function CreatedSlots({
   slots,
-  typeName,
   message,
   onRemove,
 }: {
   slots: UpSlot[]
-  typeName: (id: string) => string
   message: string | null
   onRemove: (ids: string[]) => Promise<string | null>
 }) {
@@ -315,11 +309,7 @@ function CreatedSlots({
     }
     return [...map]
   }, [slots])
-  const chosen = slots.filter((s) => picked.includes(s.id))
-
-  function tick(ids: string[], on: boolean) {
-    setPicked((p) => (on ? [...new Set([...p, ...ids])] : p.filter((x) => !ids.includes(x))))
-  }
+  const chosen = days.filter(([k]) => picked.includes(k)).flatMap(([, list]) => list)
 
   // Say how many parents get the cancellation email before anything is removed.
   function confirmText(list: UpSlot[]) {
@@ -328,61 +318,41 @@ function CreatedSlots({
   }
 
   return (
-    <section className="card space-y-4">
+    <section className="card space-y-3">
       <div>
         <h2 className="text-lg font-bold">{t('cs.title')}</h2>
         <p className="text-sm text-muted">{slots.length > 0 ? t('cs.body') : t('cs.none')}</p>
       </div>
       {message && <p className="text-sm font-medium text-success">{message}</p>}
-      {days.map(([k, list]) => (
-        <div key={k}>
-          <div className="flex flex-wrap items-center gap-2">
-            <label className="flex min-w-0 flex-1 items-center gap-3 font-semibold">
-              <input
-                type="checkbox"
-                className="h-5 w-5 shrink-0 accent-primary"
-                checked={list.every((s) => picked.includes(s.id))}
-                onChange={(e) => tick(list.map((s) => s.id), e.target.checked)}
-              />
-              {formatDate(`${k}T04:00:00Z`, lang)}
-            </label>
-            <RemoveButton
-              label={t('type.removeDay').replace('{d}', formatDate(`${k}T04:00:00Z`, lang))}
-              confirmText={confirmText(list)}
-              onRemove={() => onRemove(list.map((s) => s.id))}
-            />
-          </div>
-          <ul>
-            {list.map((s) => (
-              <li key={s.id}>
-                <label className="flex items-center gap-3 py-2 pl-8 text-sm">
-                  <input
-                    type="checkbox"
-                    className="h-5 w-5 shrink-0 accent-primary"
-                    checked={picked.includes(s.id)}
-                    onChange={(e) => tick([s.id], e.target.checked)}
-                  />
-                  <span className="min-w-0 flex-1">
-                    <span className="block font-medium">
-                      {t('type.timeRange').replace('{a}', formatTime(s.starts_at, lang)).replace('{b}', formatTime(s.ends_at, lang))}
-                    </span>
-                    <span className="block truncate text-muted">
-                      {typeName(s.appointment_type_id)} · {s.location_name}
-                    </span>
+      <ul className="divide-y divide-line">
+        {days.map(([k, list]) => {
+          const date = formatDate(`${k}T04:00:00Z`, lang)
+          const booked = list.reduce((n, s) => n + s.booked, 0)
+          return (
+            <li key={k} className="flex flex-wrap items-center gap-3 py-2">
+              <label className="flex min-w-0 flex-1 items-center gap-3">
+                <input
+                  type="checkbox"
+                  className="h-5 w-5 shrink-0 accent-primary"
+                  checked={picked.includes(k)}
+                  onChange={(e) => setPicked((p) => (e.target.checked ? [...p, k] : p.filter((x) => x !== k)))}
+                />
+                <span className="min-w-0">
+                  <span className="block font-semibold">{date}</span>
+                  <span className={`block text-sm ${booked > 0 ? 'text-primary' : 'text-muted'}`}>
+                    {t('cs.daySummary').replace('{n}', String(list.length)).replace('{b}', String(booked))}
                   </span>
-                  <span className={`shrink-0 ${s.booked > 0 ? 'font-medium text-primary' : 'text-muted'}`}>
-                    {t('type.booked').replace('{b}', String(s.booked)).replace('{c}', String(s.capacity))}
-                  </span>
-                </label>
-              </li>
-            ))}
-          </ul>
-        </div>
-      ))}
-      {chosen.length > 0 && (
+                </span>
+              </label>
+              <RemoveButton label={t('type.removeDay').replace('{d}', date)} confirmText={confirmText(list)} onRemove={() => onRemove(list.map((s) => s.id))} />
+            </li>
+          )
+        })}
+      </ul>
+      {picked.length > 0 && (
         <div className="flex flex-wrap border-t border-line pt-3">
-          <RemoveButton label={t('type.removePicked')} confirmText={confirmText(chosen)} onRemove={() => onRemove(chosen.map((s) => s.id))}>
-            {t('type.removePicked').replace('{n}', String(chosen.length))}
+          <RemoveButton label={t('cs.removePicked')} confirmText={confirmText(chosen)} onRemove={() => onRemove(chosen.map((s) => s.id))}>
+            {t('cs.removePicked').replace('{n}', String(picked.length))}
           </RemoveButton>
         </div>
       )}
