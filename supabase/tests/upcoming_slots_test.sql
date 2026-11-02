@@ -2,7 +2,7 @@
 -- date's slots from it with remove_slots.
 begin;
 create extension if not exists pgtap with schema extensions;
-select plan(14);
+select plan(21);
 
 insert into auth.users (id, email) values
   ('00000000-0000-0000-0000-0000000000f1', 'parent@upcoming.test'),
@@ -35,10 +35,10 @@ $$;
 grant execute on function pg_temp.act_as(uuid), pg_temp.type_id(text), pg_temp.kl_day(int), pg_temp.kkp18() to authenticated;
 
 -- Slots that must not show: no type, in the past, another officer's.
-insert into public.slots (officer_id, location_id, starts_at, ends_at, capacity, appointment_type_id) values
-  ('00000000-0000-0000-0000-0000000000f2', pg_temp.kkp18(), now() + interval '6 days', now() + interval '6 days 15 minutes', 1, null),
-  ('00000000-0000-0000-0000-0000000000f2', pg_temp.kkp18(), now() - interval '2 days', now() - interval '2 days' + interval '15 minutes', 1, pg_temp.type_id('hpv')),
-  ('00000000-0000-0000-0000-0000000000f3', pg_temp.kkp18(), now() + interval '7 days', now() + interval '7 days 15 minutes', 1, pg_temp.type_id('hpv'));
+insert into public.slots (officer_id, location_id, starts_at, ends_at, capacity, appointment_type_ids) values
+  ('00000000-0000-0000-0000-0000000000f2', pg_temp.kkp18(), now() + interval '6 days', now() + interval '6 days 15 minutes', 1, '{}'),
+  ('00000000-0000-0000-0000-0000000000f2', pg_temp.kkp18(), now() - interval '2 days', now() - interval '2 days' + interval '15 minutes', 1, array[pg_temp.type_id('hpv')]),
+  ('00000000-0000-0000-0000-0000000000f3', pg_temp.kkp18(), now() + interval '7 days', now() + interval '7 days 15 minutes', 1, array[pg_temp.type_id('hpv')]);
 
 select pg_temp.act_as('00000000-0000-0000-0000-0000000000f1');
 select throws_ok($$ select * from public.officer_upcoming_slots() $$, 'not_allowed', 'a parent cannot list slots');
@@ -50,24 +50,24 @@ select is(public.add_slots(pg_temp.kkp18(), pg_temp.type_id('att'), pg_temp.kl_d
   'and one ATT slot the next day');
 select is((select count(*) from public.officer_upcoming_slots())::int, 3,
   'only their own upcoming typed slots are listed');
-select is((select count(*) from public.officer_upcoming_slots() where appointment_type_id = pg_temp.type_id('hpv'))::int, 2,
+select is((select count(*) from public.officer_upcoming_slots() where pg_temp.type_id('hpv') = any (appointment_type_ids))::int, 2,
   'two of them are HPV');
 
 select pg_temp.act_as('00000000-0000-0000-0000-0000000000f1');
 select ok(public.book_slot(
   (select id from public.slots where officer_id = '00000000-0000-0000-0000-0000000000f2'
-     and appointment_type_id = pg_temp.type_id('hpv') and starts_at > now() order by starts_at limit 1),
+     and pg_temp.type_id('hpv') = any (appointment_type_ids) and starts_at > now() order by starts_at limit 1),
   '30000000-0000-0000-0000-0000000000f1', pg_temp.type_id('hpv'), null) is not null,
   'parent books the first HPV slot');
 
 select pg_temp.act_as('00000000-0000-0000-0000-0000000000f2');
-select is((select sum(booked) from public.officer_upcoming_slots() where appointment_type_id = pg_temp.type_id('hpv'))::int, 1,
+select is((select sum(booked) from public.officer_upcoming_slots() where pg_temp.type_id('hpv') = any (appointment_type_ids))::int, 1,
   'the list shows the booking');
 
 -- The date's trash button: remove_slots on every HPV slot of that day.
 select is(public.remove_slots(
   (select array_agg(id) from public.officer_upcoming_slots()
-   where appointment_type_id = pg_temp.type_id('hpv') and (starts_at at time zone 'Asia/Kuala_Lumpur')::date = pg_temp.kl_day(3)),
+   where pg_temp.type_id('hpv') = any (appointment_type_ids) and (starts_at at time zone 'Asia/Kuala_Lumpur')::date = pg_temp.kl_day(3)),
   null),
   '{"deleted": 1, "blocked": 1, "cancelled": 1}'::jsonb,
   'removing the date deletes the empty slot and cancels the booked one');
@@ -86,6 +86,30 @@ select is(public.add_slots(pg_temp.kkp18(), pg_temp.type_id('hpv'), pg_temp.kl_d
 select is(public.add_slots((public.add_location('Klinik Ujian Serentak', null) ->> 'id')::uuid, pg_temp.type_id('thalassemia'),
                            pg_temp.kl_day(10), '09:00', '09:30', 15, 1), 0,
   'another type at another location at the same time adds nothing: one officer, one place');
+
+-- A child can hold 4 upcoming bookings, one per type; a fifth is refused ---------------------
+select is(public.add_slots(pg_temp.kkp18(), pg_temp.type_id('thalassemia'), pg_temp.kl_day(10), '10:00', '10:15', 15, 1), 1,
+  'one Talasemia slot on the same date');
+select is(public.add_slots(pg_temp.kkp18(), (public.add_appointment_type('Suntikan MMR') ->> 'id')::uuid, pg_temp.kl_day(10), '11:00', '11:15', 15, 1), 1,
+  'one slot of a fifth type');
+
+create function pg_temp.book_type(p_code text) returns uuid language sql as $$
+  select public.book_slot(
+    (select id from public.slots
+     where officer_id = '00000000-0000-0000-0000-0000000000f2' and pg_temp.type_id(p_code) = any (appointment_type_ids)
+       and status = 'open' and (starts_at at time zone 'Asia/Kuala_Lumpur')::date = pg_temp.kl_day(10)
+     order by starts_at limit 1),
+    '30000000-0000-0000-0000-0000000000f1', pg_temp.type_id(p_code), null)
+$$;
+reset role;
+grant execute on function pg_temp.book_type(text) to authenticated;
+
+select pg_temp.act_as('00000000-0000-0000-0000-0000000000f1');
+select ok(pg_temp.book_type('hpv') is not null, 'first booking: HPV');
+select ok(pg_temp.book_type('att') is not null, 'second booking: ATT at the same date');
+select ok(pg_temp.book_type('dt') is not null, 'third booking: DT');
+select ok(pg_temp.book_type('thalassemia') is not null, 'fourth booking: Talasemia');
+select throws_ok($$ select pg_temp.book_type('custom-suntikan-mmr') $$, 'too_many_bookings', 'a fifth booking is refused');
 
 select * from finish();
 rollback;

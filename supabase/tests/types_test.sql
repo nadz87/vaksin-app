@@ -59,7 +59,7 @@ select is(public.add_slots((select id from public.locations where slug = 'kkp18'
 -- Parent books one; officer removes the type -------------------------------------------------
 select pg_temp.act_as('00000000-0000-0000-0000-0000000000e1');
 select ok(public.book_slot(
-  (select id from public.slots where appointment_type_id = pg_temp.type_id('custom-suntikan-mmr') order by starts_at limit 1),
+  (select id from public.slots where pg_temp.type_id('custom-suntikan-mmr') = any (appointment_type_ids) order by starts_at limit 1),
   '30000000-0000-0000-0000-0000000000e1', pg_temp.type_id('custom-suntikan-mmr'), null) is not null,
   'parent books an MMR slot');
 select is((select child_profile_complete from public.my_appointments() limit 1), false,
@@ -91,9 +91,9 @@ select is((select to_email || ' ' || (payload ->> 'child') || ' ' || (payload ->
   'an email to the parent is queued with the child and the type');
 
 -- "Any type" slot: removing a type cancels only that type's bookings -------------------------
-insert into public.slots (id, officer_id, location_id, starts_at, ends_at, capacity, appointment_type_id) values
+insert into public.slots (id, officer_id, location_id, starts_at, ends_at, capacity, appointment_type_ids) values
   ('40000000-0000-0000-0000-0000000000e1', '00000000-0000-0000-0000-0000000000e2',
-   (select id from public.locations where slug = 'kkp18'), now() + interval '5 days', now() + interval '5 days 15 minutes', 5, null);
+   (select id from public.locations where slug = 'kkp18'), now() + interval '5 days', now() + interval '5 days 15 minutes', 5, '{}');
 select pg_temp.act_as('00000000-0000-0000-0000-0000000000e1');
 select ok(public.book_slot('40000000-0000-0000-0000-0000000000e1', '30000000-0000-0000-0000-0000000000e1',
   pg_temp.type_id('dt'), null) is not null, 'parent books DT in an older any-type slot');

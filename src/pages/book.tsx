@@ -10,8 +10,10 @@ import { ErrorText, Loading } from '../components/Layout'
 
 type Child = { id: string; full_name: string; school_id: string; schools: { name: string } | null }
 type ApptType = { id: string; code: string; name_ms: string; name_en: string; icon: string; color: string; needs_reason: boolean }
-type Slot = { id: string; starts_at: string; ends_at: string; appointment_type_id: string | null; capacity: number; remaining: number; location_id: string; location_name: string }
+type Slot = { id: string; starts_at: string; ends_at: string; appointment_type_ids: string[]; capacity: number; remaining: number; location_id: string; location_name: string }
 type Step = 'what' | 'when' | 'confirm' | 'done'
+
+const takesType = (s: Slot, id: string) => s.appointment_type_ids.length === 0 || s.appointment_type_ids.includes(id)
 
 /** P5-P8: who + what, then date tiles + time chips, then confirm, then success. */
 export function BookFlow() {
@@ -57,9 +59,9 @@ export function BookFlow() {
     loadSlots()
   }, [loadSlots])
 
-  // Slots usable for the chosen type: slots for that type, or open to any type.
+  // Slots usable for the chosen type: slots that take it (often shared with other types), or open to any type.
   const typeSlots = useMemo(
-    () => (slots ?? []).filter((s) => typeId && (s.appointment_type_id === null || s.appointment_type_id === typeId)),
+    () => (slots ?? []).filter((s) => typeId && takesType(s, typeId)),
     [slots, typeId],
   )
   const slotsByDay = useMemo(() => {
@@ -82,7 +84,7 @@ export function BookFlow() {
     setDay(null)
     setSlotId(null)
     // Jump to the first month that has a slot for this type.
-    const first = (slots ?? []).find((s) => s.appointment_type_id === null || s.appointment_type_id === id)
+    const first = (slots ?? []).find((s) => takesType(s, id))
     if (first) setMonth(dayKey(first.starts_at).slice(0, 7))
     setStep('when')
   }
@@ -164,7 +166,7 @@ export function BookFlow() {
               {slots.length === 0 && <p className="card text-sm text-muted">{t('book.noSlotsSchool')}</p>}
               <div className="grid grid-cols-2 gap-3">
               {types.map((x) => {
-                const has = slots.some((s) => s.appointment_type_id === null || s.appointment_type_id === x.id)
+                const has = slots.some((s) => takesType(s, x.id))
                 return (
                   <button
                     key={x.id}

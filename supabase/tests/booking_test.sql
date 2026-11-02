@@ -28,14 +28,14 @@ insert into public.student_guardians (student_id, guardian_id) values
 
 -- s1: in 3 days, 1 place, any type   s2: in 3 hours (inside 24h cancel cutoff)
 -- s3: in 4 days, HPV only, 10 places
-insert into public.slots (id, officer_id, location_id, starts_at, ends_at, capacity, appointment_type_id) values
+insert into public.slots (id, officer_id, location_id, starts_at, ends_at, capacity, appointment_type_ids) values
   ('40000000-0000-0000-0000-000000000001', '00000000-0000-0000-0000-0000000000c2', (select id from public.locations where slug = 'kkp18'),
-   now() + interval '3 days', now() + interval '3 days 15 minutes', 1, null),
+   now() + interval '3 days', now() + interval '3 days 15 minutes', 1, '{}'),
   ('40000000-0000-0000-0000-000000000002', '00000000-0000-0000-0000-0000000000c2', (select id from public.locations where slug = 'kkp18'),
-   now() + interval '3 hours', now() + interval '3 hours 15 minutes', 1, null),
+   now() + interval '3 hours', now() + interval '3 hours 15 minutes', 1, '{}'),
   ('40000000-0000-0000-0000-000000000003', '00000000-0000-0000-0000-0000000000c2', (select id from public.locations where slug = 'kkp18'),
    now() + interval '4 days', now() + interval '4 days 30 minutes', 10,
-   (select id from public.appointment_types where code = 'hpv'));
+   array[(select id from public.appointment_types where code = 'hpv')]);
 
 -- The v1 "Kurang sihat" type is hidden since 2026-10-30; this test type keeps the needs-a-note rule covered.
 insert into public.appointment_types (code, name_ms, name_en, icon, color, needs_reason) values

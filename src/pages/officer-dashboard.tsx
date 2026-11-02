@@ -28,7 +28,7 @@ type OSlot = {
   ends_at: string
   capacity: number
   status: 'open' | 'blocked'
-  appointment_type_id: string | null
+  appointment_type_ids: string[]
   location_id: string
   location_name: string
   booked: number
@@ -449,11 +449,12 @@ export function SlotCalendar({
   const daySlots = day ? (byDay.get(day) ?? []) : []
   // Show the location under each time only when the day has slots at more than one place.
   const manyPlaces = new Set(daySlots.map((s) => s.location_id)).size > 1
-  // Different types can share a time, so a day with several types lists them under a heading each.
-  const dayTypes = [...new Set(daySlots.map((s) => s.appointment_type_id))]
-  function typeName(id: string | null) {
-    const x = types.find((y) => y.id === id)
-    return x ? (lang === 'en' ? x.name_en : x.name_ms) : t('sl.oldType')
+  // Types can share a time, so a day with several kinds of slot lists them under a heading each.
+  const typeKey = (s: OSlot) => [...s.appointment_type_ids].sort().join()
+  const dayKinds = [...new Set(daySlots.map(typeKey))]
+  function kindName(key: string) {
+    const names = types.filter((y) => key.split(',').includes(y.id)).map((y) => (lang === 'en' ? y.name_en : y.name_ms))
+    return names.join(', ') || t('sl.oldType')
   }
   const chosen = daySlots.filter((s) => picked.includes(s.id))
   const toRemove = chosen.filter((s) => s.status === 'open')
@@ -577,11 +578,11 @@ export function SlotCalendar({
             {slots === null && <Loading />}
             {slots && daySlots.length === 0 && <p className="text-sm text-muted">{t('sl.none')}</p>}
             {daySlots.length > 0 && <p className="text-xs text-muted">{t('sl.select')}</p>}
-            {dayTypes.map((typeId) => (
-              <div key={typeId ?? 'none'} className="space-y-2">
-                {dayTypes.length > 1 && <h4 className="text-sm font-semibold">{typeName(typeId)}</h4>}
+            {dayKinds.map((kind) => (
+              <div key={kind} className="space-y-2">
+                {(dayKinds.length > 1 || kind.includes(',')) && <h4 className="text-sm font-semibold">{kindName(kind)}</h4>}
                 <div className="grid grid-cols-3 gap-2 sm:grid-cols-4 md:grid-cols-6">
-                  {daySlots.filter((s) => s.appointment_type_id === typeId).map((s) => {
+                  {daySlots.filter((s) => typeKey(s) === kind).map((s) => {
                     const on = picked.includes(s.id)
                     const blocked = s.status === 'blocked'
                     return (
@@ -703,7 +704,6 @@ function ShareWithParents({ place, day, bare = false }: { place: { name: string;
 }
 
 const NEW_PLACE = '__new'
-const NEW_TYPE = '__newtype'
 
 /**
  * Tambah slot: the appointment type first (every slot has one; "+ Cipta jenis temujanji" adds
@@ -723,7 +723,8 @@ function AddSlots({
 }) {
   const { t, lang } = useI18n()
   const [types, setTypes] = useState<ApptType[]>([])
-  const [typeId, setTypeId] = useState('')
+  const [typeIds, setTypeIds] = useState<string[]>([])
+  const [creatingType, setCreatingType] = useState(false)
   const [placeId, setPlaceId] = useState(() => (locations.find((l) => l.slug === 'kkp18') ?? locations[0])?.id ?? '')
   const [newName, setNewName] = useState('')
   const [newAddress, setNewAddress] = useState('')
@@ -739,7 +740,10 @@ function AddSlots({
     const { data } = await db().from('appointment_types').select('id, name_ms, name_en').eq('active', true).order('sort_order')
     const list = (data as ApptType[]) ?? []
     setTypes(list)
-    setTypeId((id) => (id && list.some((x) => x.id === id) ? id : (list[0]?.id ?? '')))
+    setTypeIds((ids) => {
+      const kept = ids.filter((id) => list.some((x) => x.id === id))
+      return kept.length > 0 ? kept : list.slice(0, 1).map((x) => x.id)
+    })
     return list
   }, [])
   useEffect(() => {
@@ -755,8 +759,10 @@ function AddSlots({
       return setError(errorCode(error))
     }
     await loadTypes()
-    setTypeId((data as { id: string }).id)
+    const id = (data as { id: string }).id
+    setTypeIds((ids) => [...new Set([...ids, id])])
     setNewType('')
+    setCreatingType(false)
     setBusy(false)
   }
 
@@ -779,12 +785,12 @@ function AddSlots({
     e.preventDefault()
     setError(null)
     if (placeId === NEW_PLACE) return setError('bad_location')
-    if (!typeId || typeId === NEW_TYPE) return setError('bad_type')
+    if (typeIds.length === 0) return setError('bad_type')
     if (end <= start) return setError('bad_time')
     setBusy(true)
-    const { data, error } = await db().rpc('add_slots', {
+    const { data, error } = await db().rpc('add_slots_for_types', {
       p_location: placeId,
-      p_type: typeId,
+      p_types: typeIds,
       p_date: day,
       p_start: start,
       p_end: end,
@@ -800,18 +806,27 @@ function AddSlots({
   return (
     <form onSubmit={submit} className="card grid gap-3 sm:grid-cols-2">
       <h3 className="text-lg font-bold sm:col-span-2">{t('sl.addTitle')}</h3>
-      <label className="block sm:col-span-2">
-        <span className="label">{t('sl.type')}</span>
-        <select className="field" required value={typeId} onChange={(e) => setTypeId(e.target.value)}>
+      <fieldset className="sm:col-span-2">
+        <legend className="label">{t('sl.type')}</legend>
+        <div className="space-y-1">
           {types.map((ty) => (
-            <option key={ty.id} value={ty.id}>
+            <label key={ty.id} className="flex items-center gap-3 py-1.5">
+              <input
+                type="checkbox"
+                className="h-5 w-5 shrink-0 accent-primary"
+                checked={typeIds.includes(ty.id)}
+                onChange={(e) => setTypeIds((ids) => (e.target.checked ? [...ids, ty.id] : ids.filter((x) => x !== ty.id)))}
+              />
               {lang === 'en' ? ty.name_en : ty.name_ms}
-            </option>
+            </label>
           ))}
-          <option value={NEW_TYPE}>{t('type.addOption')}</option>
-        </select>
-      </label>
-      {typeId === NEW_TYPE && (
+        </div>
+        <button type="button" className="mt-1 text-sm font-semibold text-primary" aria-expanded={creatingType} onClick={() => setCreatingType((x) => !x)}>
+          {t('type.addOption')}
+        </button>
+        <span className="mt-1 block text-xs text-muted">{t('sl.typeHint')}</span>
+      </fieldset>
+      {creatingType && (
         <div className="space-y-3 rounded-2xl bg-page p-3 sm:col-span-2">
           <label className="block">
             <span className="label">{t('type.name')}</span>
@@ -874,7 +889,7 @@ function AddSlots({
       </label>
       <div className="sm:col-span-2">
         <ErrorText code={error} />
-        <button className="btn-primary mt-2" disabled={busy || placeId === NEW_PLACE || !typeId || typeId === NEW_TYPE}>
+        <button className="btn-primary mt-2" disabled={busy || placeId === NEW_PLACE || typeIds.length === 0}>
           <Icon name="slots" className="mr-2 h-5 w-5" />
           {t('sl.add')}
         </button>
