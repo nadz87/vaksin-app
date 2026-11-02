@@ -2,7 +2,7 @@
 -- date's slots from it with remove_slots.
 begin;
 create extension if not exists pgtap with schema extensions;
-select plan(9);
+select plan(14);
 
 insert into auth.users (id, email) values
   ('00000000-0000-0000-0000-0000000000f1', 'parent@upcoming.test'),
@@ -73,6 +73,19 @@ select is(public.remove_slots(
   'removing the date deletes the empty slot and cancels the booked one');
 select is((select count(*) from public.officer_upcoming_slots())::int, 1,
   'only the ATT slot is left in the list');
+
+-- Different types can share the same time at one clinic ------------------------------------
+select is(public.add_slots(pg_temp.kkp18(), pg_temp.type_id('hpv'), pg_temp.kl_day(10), '09:00', '09:30', 15, 1), 2,
+  'two HPV slots at 09:00');
+select is(public.add_slots(pg_temp.kkp18(), pg_temp.type_id('att'), pg_temp.kl_day(10), '09:00', '09:30', 15, 1), 2,
+  'ATT at the same times on the same date is allowed');
+select is(public.add_slots(pg_temp.kkp18(), pg_temp.type_id('dt'), pg_temp.kl_day(10), '09:15', '09:45', 15, 1), 2,
+  'DT overlapping both is allowed too');
+select is(public.add_slots(pg_temp.kkp18(), pg_temp.type_id('hpv'), pg_temp.kl_day(10), '09:00', '09:30', 15, 1), 0,
+  'the same type at the same times still adds nothing');
+select is(public.add_slots((public.add_location('Klinik Ujian Serentak', null) ->> 'id')::uuid, pg_temp.type_id('thalassemia'),
+                           pg_temp.kl_day(10), '09:00', '09:30', 15, 1), 0,
+  'another type at another location at the same time adds nothing: one officer, one place');
 
 select * from finish();
 rollback;

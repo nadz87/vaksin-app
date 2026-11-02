@@ -410,6 +410,7 @@ export function SlotCalendar({
   const [month, setMonth] = useState(todayKey().slice(0, 7))
   const [day, setDay] = useState<string | null>(null)
   const [slots, setSlots] = useState<OSlot[] | null>(null)
+  const [types, setTypes] = useState<ApptType[]>([])
   const [picked, setPicked] = useState<string[]>([])
   const [reason, setReason] = useState('')
   const [busy, setBusy] = useState(false)
@@ -422,8 +423,12 @@ export function SlotCalendar({
   const days = monthDays(month, todayKey())
 
   const load = useCallback(async () => {
-    const { data } = await db().rpc('officer_slots', { p_from: all[0], p_to: all[all.length - 1] })
+    const [{ data }, { data: typeRows }] = await Promise.all([
+      db().rpc('officer_slots', { p_from: all[0], p_to: all[all.length - 1] }),
+      db().from('appointment_types').select('id, name_ms, name_en'),
+    ])
     setSlots((data as OSlot[]) ?? [])
+    setTypes((typeRows as ApptType[]) ?? [])
   }, [month]) // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
@@ -444,6 +449,12 @@ export function SlotCalendar({
   const daySlots = day ? (byDay.get(day) ?? []) : []
   // Show the location under each time only when the day has slots at more than one place.
   const manyPlaces = new Set(daySlots.map((s) => s.location_id)).size > 1
+  // Different types can share a time, so a day with several types lists them under a heading each.
+  const dayTypes = [...new Set(daySlots.map((s) => s.appointment_type_id))]
+  function typeName(id: string | null) {
+    const x = types.find((y) => y.id === id)
+    return x ? (lang === 'en' ? x.name_en : x.name_ms) : t('sl.oldType')
+  }
   const chosen = daySlots.filter((s) => picked.includes(s.id))
   const toRemove = chosen.filter((s) => s.status === 'open')
   const toReopen = chosen.filter((s) => s.status === 'blocked')
@@ -566,31 +577,36 @@ export function SlotCalendar({
             {slots === null && <Loading />}
             {slots && daySlots.length === 0 && <p className="text-sm text-muted">{t('sl.none')}</p>}
             {daySlots.length > 0 && <p className="text-xs text-muted">{t('sl.select')}</p>}
-            <div className="grid grid-cols-3 gap-2 sm:grid-cols-4 md:grid-cols-6">
-              {daySlots.map((s) => {
-                const on = picked.includes(s.id)
-                const blocked = s.status === 'blocked'
-                return (
-                  <button
-                    key={s.id}
-                    onClick={() => toggle(s.id)}
-                    aria-pressed={on}
-                    className={`rounded-2xl px-2 py-3 text-sm font-medium transition ${
-                      on ? 'bg-ink text-white' : blocked ? 'bg-page text-muted line-through' : s.booked > 0 ? 'bg-primary-soft text-primary' : 'bg-page text-ink'
-                    }`}
-                  >
-                    {formatTime(s.starts_at, lang)}
-                    {manyPlaces && <span className="block truncate text-xs opacity-75">{s.location_name}</span>}
-                    {(s.capacity > 1 || s.booked > 0) && !blocked && (
-                      <span className="block text-xs opacity-75">
-                        {s.booked}/{s.capacity}
-                      </span>
-                    )}
-                    {blocked && <span className="block text-xs no-underline">{t('cal.statusBlocked')}</span>}
-                  </button>
-                )
-              })}
-            </div>
+            {dayTypes.map((typeId) => (
+              <div key={typeId ?? 'none'} className="space-y-2">
+                {dayTypes.length > 1 && <h4 className="text-sm font-semibold">{typeName(typeId)}</h4>}
+                <div className="grid grid-cols-3 gap-2 sm:grid-cols-4 md:grid-cols-6">
+                  {daySlots.filter((s) => s.appointment_type_id === typeId).map((s) => {
+                    const on = picked.includes(s.id)
+                    const blocked = s.status === 'blocked'
+                    return (
+                      <button
+                        key={s.id}
+                        onClick={() => toggle(s.id)}
+                        aria-pressed={on}
+                        className={`rounded-2xl px-2 py-3 text-sm font-medium transition ${
+                          on ? 'bg-ink text-white' : blocked ? 'bg-page text-muted line-through' : s.booked > 0 ? 'bg-primary-soft text-primary' : 'bg-page text-ink'
+                        }`}
+                      >
+                        {formatTime(s.starts_at, lang)}
+                        {manyPlaces && <span className="block truncate text-xs opacity-75">{s.location_name}</span>}
+                        {(s.capacity > 1 || s.booked > 0) && !blocked && (
+                          <span className="block text-xs opacity-75">
+                            {s.booked}/{s.capacity}
+                          </span>
+                        )}
+                        {blocked && <span className="block text-xs no-underline">{t('cal.statusBlocked')}</span>}
+                      </button>
+                    )
+                  })}
+                </div>
+              </div>
+            ))}
 
             {chosen.length > 0 && (
               <div className="space-y-2 border-t border-line pt-3">
