@@ -7,10 +7,26 @@ export function Shell({ children, wide = false }: { children: ReactNode; wide?: 
   const { t, lang, setLang } = useI18n()
   const { session, signOut } = useAuth()
   const online = useOnline()
+  const [registration, setRegistration] = useState<ServiceWorkerRegistration>()
   const {
     needRefresh: [needRefresh],
     updateServiceWorker,
-  } = useRegisterSW()
+  } = useRegisterSW({ onRegisteredSW: (_url, r) => setRegistration(r) })
+
+  // Browsers only look for a new version on a full page load, and a phone can keep a tab open
+  // for days. So look again whenever the app comes back to the screen, and hourly while it stays there.
+  useEffect(() => {
+    if (!registration) return
+    const check = () => {
+      if (document.visibilityState === 'visible' && navigator.onLine) registration.update().catch(() => {})
+    }
+    document.addEventListener('visibilitychange', check)
+    const hourly = setInterval(check, 60 * 60 * 1000)
+    return () => {
+      document.removeEventListener('visibilitychange', check)
+      clearInterval(hourly)
+    }
+  }, [registration])
 
   return (
     <div className={`mx-auto min-h-dvh px-4 pb-10 pt-4 ${wide ? 'max-w-5xl' : 'max-w-md'}`}>
