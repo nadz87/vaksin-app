@@ -29,7 +29,8 @@
   body {
     @apply font-sans text-ink antialiased;
     min-height: 100dvh;
-    background: linear-gradient(160deg, #eef3ff 0%, #f6f2ff 55%, #f4f6fb 100%) fixed;
+    /* Spans the whole page, not the screen: "fixed" leaves a seam on long pages and iPhones ignore it. */
+    background: linear-gradient(160deg, #eef3ff 0%, #f6f2ff 55%, #f4f6fb 100%);
   }
 }
 

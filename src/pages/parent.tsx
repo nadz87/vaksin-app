@@ -409,6 +409,10 @@ type MyAppt = {
  * type or the time passes), then `children` (the book button), then upcoming bookings with
  * cancel until 24h before and a reminder while the child's health profile is incomplete.
  */
+// What the database stores when an officer gives no reason (block_slots_internal). The notice's
+// heading already says this, so only a reason the officer typed is shown under it.
+const NO_REASON_GIVEN = 'Dibatalkan oleh pegawai kesihatan'
+
 function MyAppointments({ children }: { children: ReactNode }) {
   const { t, lang } = useI18n()
   const [items, setItems] = useState<MyAppt[] | null>(null)
@@ -445,7 +449,7 @@ function MyAppointments({ children }: { children: ReactNode }) {
             <br />
             {formatDate(a.starts_at, lang)}, {formatTime(a.starts_at, lang)} · {a.location_name}
           </p>
-          {a.cancel_reason && <p className="text-sm text-muted">{a.cancel_reason}</p>}
+          {a.cancel_reason && a.cancel_reason !== NO_REASON_GIVEN && <p className="text-sm text-muted">{a.cancel_reason}</p>}
           <p className="text-sm">{t('mine.pickNewBody')}</p>
           <Link to={`/book?child=${a.student_id}`} className="btn-primary">
             {t('mine.rebook')}
